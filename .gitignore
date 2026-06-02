@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local SQLite control database
+db/*.sqlite
+db/*.sqlite-*
+db/*.db
+db/*.db-*
+!db/.gitkeep
+
+# Real Wix exports and private inputs
+data/input/*
+!data/input/wix_posts_sample.csv
+!data/input/category_map.csv
+
+# Downloaded/generated media
+data/images/*
+!data/images/.gitkeep
+
+# Generated reports and manifests
+data/output/*
+!data/output/.gitkeep
+
+# Runtime logs
+logs/*
+!logs/.gitkeep
+
+# Backups and heavy archives
+backups/
+backup/
+*.sql
+*.sql.gz
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+*.7z
+*.rar
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
