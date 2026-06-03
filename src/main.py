@@ -27,7 +27,7 @@ from .seo_auditor import (
 from .url_manager import analyze_urls
 from .validators import positive_int, require_file
 from .wordpress_client import WordPressClient
-from .wix_csv_normalizer import normalize_wix_csv
+from .wix_csv_normalizer import check_wix_csv_encoding, normalize_wix_csv
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -61,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_wix_parser = subparsers.add_parser("normalize-wix-csv")
     normalize_wix_parser.add_argument("--file", required=True)
     normalize_wix_parser.add_argument("--output", required=True)
+
+    check_encoding_parser = subparsers.add_parser("check-encoding")
+    check_encoding_parser.add_argument("--file", required=True)
 
     analyze_urls_parser = subparsers.add_parser("analyze-urls")
     analyze_urls_parser.add_argument("--file", required=True)
@@ -121,9 +124,14 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
         file_path = require_file(resolve_file(settings, args.file))
         output_path = resolve_file(settings, args.output)
         report_path = settings.output_dir / "normalize_wix_csv_report.csv"
-        result = normalize_wix_csv(file_path, output_path, report_path)
+        encoding_report_path = settings.output_dir / "encoding_report.csv"
+        result = normalize_wix_csv(file_path, output_path, report_path, encoding_report_path)
         db.record_audit("csv", "info", "Wix CSV normalization completed", result)
         return result
+
+    if command == "check-encoding":
+        file_path = require_file(resolve_file(settings, args.file))
+        return check_wix_csv_encoding(file_path)
 
     if command == "analyze-urls":
         file_path = require_file(resolve_file(settings, args.file))

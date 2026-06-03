@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import csv
 import html
+import io
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from .encoding_utils import (
+    analyze_csv_text_for_mojibake,
+    count_mojibake_patterns,
+    decode_text_file,
+    fix_mojibake,
+)
 
 
 NORMALIZED_COLUMNS = [
@@ -39,6 +47,8 @@ class NormalizeStats:
     invalid_urls: int = 0
     media_json_errors: int = 0
     category_json_errors: int = 0
+    rows_with_encoding_fixes: set[int] = field(default_factory=set)
+    columns_with_encoding_fixes: set[str] = field(default_factory=set)
     rows: list[dict[str, Any]] = field(default_factory=list)
 
     def summary_rows(self) -> list[dict[str, Any]]:
@@ -71,32 +81,57 @@ class NormalizeStats:
         ]
 
 
-def normalize_wix_csv(input_file: Path, output_file: Path, report_file: Path) -> dict[str, Any]:
+def normalize_wix_csv(
+    input_file: Path,
+    output_file: Path,
+    report_file: Path,
+    encoding_report_file: Path,
+) -> dict[str, Any]:
     stats = NormalizeStats()
+    decoded = decode_text_file(input_file)
+    input_encoding_analysis = analyze_csv_text_for_mojibake(decoded.text)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     report_file.parent.mkdir(parents=True, exist_ok=True)
+    encoding_report_file.parent.mkdir(parents=True, exist_ok=True)
 
-    with input_file.open("r", encoding="utf-8-sig", newline="") as source:
-        reader = csv.DictReader(source)
-        if not reader.fieldnames:
-            raise ValueError(f"CSV has no header row: {input_file}")
+    reader = csv.DictReader(io.StringIO(decoded.text))
+    if not reader.fieldnames:
+        raise ValueError(f"CSV has no header row: {input_file}")
 
-        with output_file.open("w", encoding="utf-8", newline="") as target:
-            writer = csv.DictWriter(target, fieldnames=NORMALIZED_COLUMNS)
-            writer.writeheader()
-            for row_number, row in enumerate(reader, start=2):
-                stats.total_rows += 1
-                normalized, report_row = normalize_wix_export_row(row, row_number)
-                writer.writerow(normalized)
-                stats.normalized_rows += 1
-                stats.rows.append(report_row)
-                _accumulate_stats(stats, report_row)
+    with output_file.open("w", encoding="utf-8", newline="") as target:
+        writer = csv.DictWriter(target, fieldnames=NORMALIZED_COLUMNS)
+        writer.writeheader()
+        for row_number, row in enumerate(reader, start=2):
+            stats.total_rows += 1
+            normalized, report_row = normalize_wix_export_row(row, row_number)
+            writer.writerow(normalized)
+            stats.normalized_rows += 1
+            stats.rows.append(report_row)
+            _accumulate_stats(stats, report_row)
 
     _write_report(report_file, stats)
+    output_text = output_file.read_text(encoding="utf-8")
+    output_pattern_count = count_mojibake_patterns(output_text)
+    _write_encoding_report(
+        encoding_report_file,
+        input_file,
+        decoded.encoding_detected,
+        decoded.encoding_used,
+        input_encoding_analysis["pattern_count_before"],
+        output_pattern_count,
+        stats,
+    )
     return {
         "input": str(input_file),
         "output": str(output_file),
         "report": str(report_file),
+        "encoding_report": str(encoding_report_file),
+        "encoding_detected": decoded.encoding_detected,
+        "encoding_used": decoded.encoding_used,
+        "mojibake_patterns_before": input_encoding_analysis["pattern_count_before"],
+        "mojibake_patterns_after": output_pattern_count,
+        "encoding_rows_affected": len(stats.rows_with_encoding_fixes),
+        "encoding_columns_affected": sorted(stats.columns_with_encoding_fixes),
         "total_rows": stats.total_rows,
         "normalized_rows": stats.normalized_rows,
         "without_image": stats.without_image,
@@ -113,13 +148,19 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
     warnings: list[str] = []
     media_error = ""
     category_error = ""
+    fixed_columns: set[str] = set()
 
     wix_id = _value(row, "id")
-    title = _value(row, "title")
-    slug = _value(row, "slug", preserve_whitespace=True).strip()
-    excerpt = _value(row, "excerpt")
-    content_text = _value(row, "contentText", preserve_whitespace=True)
-    rich_content = _value(row, "richContent", preserve_whitespace=True)
+    title = _fixed_value(row, "title", fixed_columns)
+    slug = _fixed_value(row, "slug", fixed_columns, preserve_whitespace=True).strip()
+    excerpt = _fixed_value(row, "excerpt", fixed_columns)
+    content_text = _fixed_value(row, "contentText", fixed_columns, preserve_whitespace=True)
+    rich_content_raw = _value(row, "richContent", preserve_whitespace=True)
+    rich_content, rich_content_fixed, rich_content_warning = fix_json_text_if_safe(rich_content_raw)
+    if rich_content_fixed:
+        fixed_columns.add("page_content")
+    if rich_content_warning:
+        warnings.append(rich_content_warning)
     content_source = "contentText"
 
     if not content_text.strip():
@@ -144,7 +185,7 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
     if not image_url:
         warnings.append("missing_image")
 
-    old_url = _value(row, "publicUrl", preserve_whitespace=True).strip()
+    old_url = _fixed_value(row, "publicUrl", fixed_columns, preserve_whitespace=True).strip()
     if old_url and not _is_valid_url(old_url):
         warnings.append("invalid_old_url")
 
@@ -160,10 +201,10 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
         "category": category,
         "image_url": image_url,
         "old_url": old_url,
-        "author": _value(row, "author"),
+        "author": _fixed_value(row, "author", fixed_columns),
         "excerpt": excerpt,
         "slug": slug,
-        "tags": extract_tags(row),
+        "tags": extract_tags(row, fixed_columns),
         "page_content": rich_content,
     }
 
@@ -180,6 +221,7 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
         "old_url": old_url,
         "image_url": image_url,
         "content_source": content_source,
+        "encoding_fixed_columns": "|".join(sorted(fixed_columns)),
     }
     return normalized, report_row
 
@@ -246,7 +288,7 @@ def parse_category_ids(raw: str) -> tuple[list[str], str]:
     return [], error
 
 
-def extract_tags(row: dict[str, Any]) -> str:
+def extract_tags(row: dict[str, Any], fixed_columns: set[str] | None = None) -> str:
     values: list[str] = []
     for key in ("hashtags", "tagIds", "tags"):
         raw = _value(row, key, preserve_whitespace=True)
@@ -254,12 +296,68 @@ def extract_tags(row: dict[str, Any]) -> str:
             continue
         parsed, _error = _parse_jsonish(raw)
         if isinstance(parsed, list):
-            values.extend(str(item).strip() for item in parsed if str(item).strip())
+            for item in parsed:
+                value = str(item).strip()
+                fixed = fix_mojibake(value)
+                if fixed != value and fixed_columns is not None:
+                    fixed_columns.add("tags")
+                if fixed:
+                    values.append(fixed)
         elif isinstance(parsed, str):
-            values.extend(part.strip() for part in re.split(r"[|,;]", parsed) if part.strip())
+            for part in re.split(r"[|,;]", parsed):
+                value = part.strip()
+                fixed = fix_mojibake(value)
+                if fixed != value and fixed_columns is not None:
+                    fixed_columns.add("tags")
+                if fixed:
+                    values.append(fixed)
         else:
-            values.extend(part.strip() for part in re.split(r"[|,;]", raw) if part.strip())
+            for part in re.split(r"[|,;]", raw):
+                value = part.strip()
+                fixed = fix_mojibake(value)
+                if fixed != value and fixed_columns is not None:
+                    fixed_columns.add("tags")
+                if fixed:
+                    values.append(fixed)
     return ",".join(dict.fromkeys(values))
+
+
+def fix_json_text_if_safe(raw: str) -> tuple[str, bool, str]:
+    text = raw or ""
+    if not text.strip():
+        return text, False, ""
+    if not text.strip().startswith(("{", "[")):
+        return text, False, "page_content_encoding_not_fixed_not_json" if count_mojibake_patterns(text) else ""
+    parsed, error = _parse_jsonish(text)
+    if parsed is None:
+        return text, False, "page_content_encoding_not_fixed_invalid_json" if count_mojibake_patterns(text) else ""
+    if isinstance(parsed, str):
+        fixed = fix_mojibake(parsed)
+        return fixed, fixed != parsed, ""
+    fixed_value = _fix_json_value(parsed)
+    if fixed_value == parsed:
+        return text, False, ""
+    try:
+        return json.dumps(fixed_value, ensure_ascii=False), True, ""
+    except (TypeError, ValueError):
+        return text, False, "page_content_encoding_not_fixed_json_dump_failed"
+
+
+def check_wix_csv_encoding(file_path: Path) -> dict[str, Any]:
+    decoded = decode_text_file(file_path)
+    analysis = analyze_csv_text_for_mojibake(decoded.text)
+    return {
+        "file": str(file_path),
+        "encoding_detected": decoded.encoding_detected,
+        "encoding_used": decoded.encoding_used,
+        "tried_encodings": decoded.tried_encodings,
+        "mojibake_detected": analysis["pattern_count_before"] > 0 or analysis["rows_affected"] > 0,
+        "pattern_count_before": analysis["pattern_count_before"],
+        "pattern_count_after_if_fixed": analysis["pattern_count_after"],
+        "rows_affected": analysis["rows_affected"],
+        "columns_affected": analysis["columns_affected"],
+        "decode_errors": decoded.decode_errors,
+    }
 
 
 def _parse_jsonish(raw: str) -> tuple[Any, str]:
@@ -272,6 +370,16 @@ def _parse_jsonish(raw: str) -> tuple[Any, str]:
         return json.loads(text), ""
     except json.JSONDecodeError as exc:
         return None, f"{exc.msg} at pos {exc.pos}"
+
+
+def _fix_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _fix_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_fix_json_value(item) for item in value]
+    if isinstance(value, str):
+        return fix_mojibake(value)
+    return value
 
 
 def _collect_text_nodes(value: Any, texts: list[str]) -> None:
@@ -337,6 +445,29 @@ def _value(row: dict[str, Any], key: str, preserve_whitespace: bool = False) -> 
     return re.sub(r"\s+", " ", text.strip())
 
 
+def _fixed_value(
+    row: dict[str, Any],
+    key: str,
+    fixed_columns: set[str],
+    preserve_whitespace: bool = False,
+) -> str:
+    original = _value(row, key, preserve_whitespace=preserve_whitespace)
+    fixed = fix_mojibake(original)
+    if fixed != original or count_mojibake_patterns(original):
+        fixed_columns.add(_normalized_report_column(key))
+    return fixed
+
+
+def _normalized_report_column(key: str) -> str:
+    mapping = {
+        "contentText": "content",
+        "publicUrl": "old_url",
+        "hashtags": "tags",
+        "tagIds": "tags",
+    }
+    return mapping.get(key, key)
+
+
 def _accumulate_stats(stats: NormalizeStats, report_row: dict[str, Any]) -> None:
     warnings = set(str(report_row.get("warnings") or "").split(";"))
     if "missing_image" in warnings:
@@ -353,6 +484,10 @@ def _accumulate_stats(stats: NormalizeStats, report_row: dict[str, Any]) -> None
         stats.media_json_errors += 1
     if report_row.get("category_json_error"):
         stats.category_json_errors += 1
+    fixed_columns = [item for item in str(report_row.get("encoding_fixed_columns") or "").split("|") if item]
+    if fixed_columns:
+        stats.rows_with_encoding_fixes.add(int(report_row["row_number"]))
+        stats.columns_with_encoding_fixes.update(fixed_columns)
 
 
 def _write_report(report_file: Path, stats: NormalizeStats) -> None:
@@ -369,9 +504,43 @@ def _write_report(report_file: Path, stats: NormalizeStats) -> None:
         "old_url",
         "image_url",
         "content_source",
+        "encoding_fixed_columns",
     ]
     with report_file.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(stats.summary_rows())
         writer.writerows(stats.rows)
+
+
+def _write_encoding_report(
+    report_file: Path,
+    input_file: Path,
+    encoding_detected: str,
+    encoding_used: str,
+    pattern_count_before: int,
+    pattern_count_after: int,
+    stats: NormalizeStats,
+) -> None:
+    fieldnames = [
+        "archivo",
+        "encoding_detectado",
+        "encoding_usado",
+        "conteo_patrones_antes",
+        "conteo_patrones_despues",
+        "filas_afectadas",
+        "columnas_afectadas",
+    ]
+    row = {
+        "archivo": str(input_file),
+        "encoding_detectado": encoding_detected,
+        "encoding_usado": encoding_used,
+        "conteo_patrones_antes": pattern_count_before,
+        "conteo_patrones_despues": pattern_count_after,
+        "filas_afectadas": len(stats.rows_with_encoding_fixes),
+        "columnas_afectadas": "|".join(sorted(stats.columns_with_encoding_fixes)),
+    }
+    with report_file.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow(row)

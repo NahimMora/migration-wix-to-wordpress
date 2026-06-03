@@ -10,6 +10,7 @@ from typing import Any
 from .category_mapper import load_category_map, resolve_category
 from .config import Settings
 from .database import MigrationDB
+from .encoding_utils import analyze_csv_text_for_mojibake
 from .html_cleaner import clean_html, visible_text
 from .normalizer import clean_text, normalize_wix_row, source_key
 
@@ -62,6 +63,12 @@ def normalize_headers(row: dict[str, Any]) -> dict[str, Any]:
 
 def analyze_csv(file_path: Path, db: MigrationDB | None = None) -> dict[str, Any]:
     rows, warnings = read_csv_rows(file_path)
+    encoding_text = file_path.read_text(encoding="utf-8-sig", errors="replace")
+    encoding_analysis = analyze_csv_text_for_mojibake(encoding_text)
+    critical_warnings: list[str] = []
+    if encoding_analysis["rows_affected"] or encoding_analysis["pattern_count_before"]:
+        warnings.append("possible_mojibake_detected")
+        critical_warnings.append("possible_mojibake_detected")
     headers = set(rows[0].keys()) if rows else set()
     missing_columns = sorted(EXPECTED_COLUMNS - headers)
     extra_columns = sorted(headers - EXPECTED_COLUMNS - OPTIONAL_COLUMNS)
@@ -103,11 +110,16 @@ def analyze_csv(file_path: Path, db: MigrationDB | None = None) -> dict[str, Any
         "empty_content": empty_content,
         "duplicate_wix_ids": len(duplicate_wix_ids),
         "duplicate_old_urls": len(duplicate_old_urls),
+        "mojibake_rows_affected": encoding_analysis["rows_affected"],
+        "mojibake_columns_affected": encoding_analysis["columns_affected"],
+        "mojibake_pattern_count": encoding_analysis["pattern_count_before"],
+        "critical_warnings": critical_warnings,
+        "migration_recommended": not critical_warnings,
         "warnings": warnings,
     }
 
     if db:
-        severity = "warning" if missing_columns or duplicate_wix_ids or duplicate_old_urls else "info"
+        severity = "critical" if critical_warnings else "warning" if missing_columns or duplicate_wix_ids or duplicate_old_urls else "info"
         db.record_audit("csv", severity, "CSV analysis completed", result)
     return result
 
