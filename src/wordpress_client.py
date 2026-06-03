@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import time
 from pathlib import Path
@@ -43,6 +44,9 @@ class WordPressClient:
 
     def get_current_user(self) -> dict[str, Any]:
         return self.request("GET", f"{self.settings.wp_v2_root}/users/me", params={"context": "edit"})
+
+    def get_current_user_probe(self) -> tuple[int | None, Any]:
+        return self.raw_request("GET", f"{self.settings.wp_v2_root}/users/me", params={"context": "edit"})
 
     def get_posts(self, **params: Any) -> list[dict[str, Any]]:
         return self.request("GET", f"{self.settings.wp_v2_root}/posts", params=params)
@@ -125,6 +129,13 @@ class WordPressClient:
 
         raise WordPressError(f"WordPress request failed: {last_error}")
 
+    def raw_request(self, method: str, url: str, **kwargs: Any) -> tuple[int | None, Any]:
+        try:
+            response = self.session.request(method, url, timeout=self.timeout, **kwargs)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            return None, {"error": str(exc)}
+        return response.status_code, _json_or_text(response)
+
     def _handle_response(self, response: Response, method: str, url: str) -> Any:
         payload = _json_or_text(response)
         status_code = response.status_code
@@ -146,4 +157,7 @@ def _json_or_text(response: Response) -> Any:
     try:
         return response.json()
     except ValueError:
-        return response.text
+        try:
+            return json.loads(response.content.decode("utf-8-sig"))
+        except (UnicodeDecodeError, ValueError):
+            return response.text

@@ -126,7 +126,7 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
         return result
 
     if command == "verify-wordpress":
-        return {"ok": verify_wordpress(settings, db, logger)}
+        return verify_wordpress(settings, db, logger)
 
     if command == "verify-categories":
         load_category_map(settings.input_dir / "category_map.csv", db)
