@@ -40,11 +40,23 @@ Se comparan paths:
 - se ignora http vs https;
 - se detecta trailing slash;
 - se detectan cambios reales de path o slug.
+- antes de migrar, se predice si el slug sera sanitizado por quitar acentos.
+
+Ejemplo de sanitizacion:
+
+```txt
+old_path = /post/la-violencia-llegó-al-futsal
+expected_new_path = /post/la-violencia-llego-al-futsal/
+status = slug_sanitized
+reason = non_ascii_slug_sanitized
+```
 
 ## Estados
 
 - `exact_match`: path igual.
 - `trailing_slash_only`: solo cambia slash final.
+- `slug_sanitized`: `old_path` contiene caracteres no ASCII y el path esperado usa slug ASCII.
+- `path_changed`: cambio previsto de path antes de migrar.
 - `changed_by_wordpress`: WordPress cambio slug.
 - `path_structure_changed`: cambio estructura.
 - `invalid_old_url`: URL fuente invalida.
@@ -56,7 +68,10 @@ Se comparan paths:
 El sistema genera:
 
 ```txt
+data/output/pre_migration_url_risk_report.csv
 data/output/redirect_candidates.csv
 ```
+
+`pre_migration_url_risk_report.csv` se genera con `analyze-urls` y permite filtrar `needs_redirect=true` antes de ejecutar migraciones.
 
 No aplica redirecciones automaticamente.

@@ -15,7 +15,7 @@ from .database import MigrationDB
 from .html_cleaner import clean_html
 from .image_manager import ImageDownloadError, ImageManager, ImageResult
 from .normalizer import clean_text
-from .url_manager import build_new_url, classify_url_status
+from .url_manager import build_new_url, classify_url_status, predict_url_change
 from .validators import validate_default_post_status, validate_source_post
 from .wordpress_client import WordPressClient, WordPressError
 
@@ -61,6 +61,7 @@ class PostMigrationManager:
             }
             validation_warnings = validate_source_post(raw_payload, post_for_payload)
             image_plan = self.image_manager.dry_run_plan(post.get("featured_image_url"))
+            url_prediction = predict_url_change(self.settings, post.get("old_url"), post.get("desired_slug"))
             payload = self._build_post_payload(post_for_payload, raw_payload, image_result=image_plan, dry_run=True)
             status = "dry_run_valid" if not validation_warnings else "failed"
 
@@ -78,6 +79,7 @@ class PostMigrationManager:
                 "status": status,
                 "warnings": validation_warnings,
                 "category_resolution": category_resolution,
+                "url_prediction": url_prediction,
                 "post_payload": payload,
                 "image_plan": image_plan.plan,
             }

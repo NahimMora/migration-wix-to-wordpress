@@ -26,6 +26,7 @@ python -m src.main analyze-urls --file data/input/wix_posts_normalized_0001.csv
 ```
 
 Copiar al mapa definitivo solo las filas con `wp_category_id` confirmado. Las filas pendientes deben resolverse antes de escalar una prueba real.
+Revisar `data/output/pre_migration_url_risk_report.csv` antes de migrar. Si hay `slug_sanitized`, planificar redirecciones para esas URLs.
 
 Antes de migrar una muestra, probar 2 o 3 URLs reales de imagen:
 

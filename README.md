@@ -165,6 +165,7 @@ Hace:
 - valida campos;
 - normaliza slug;
 - resuelve categoria y muestra `category_resolution` por post;
+- predice cambios de URL por sanitizacion de slug en `url_prediction`;
 - simula payload de post;
 - simula plan de media;
 - registra `dry_run_valid` si corresponde.
@@ -238,6 +239,7 @@ Los reportes se generan en `data/output/` y estan ignorados por Git:
 - `posts_report.csv`
 - `images_report.csv`
 - `url_report.csv`
+- `pre_migration_url_risk_report.csv`
 - `errors_report.csv`
 - `redirect_candidates.csv`
 - `internal_links_report.csv`

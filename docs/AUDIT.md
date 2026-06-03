@@ -30,6 +30,7 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 - Indices unicos parciales por `wix_id` y `old_url`.
 - Deduplicacion de imagenes por URL y hash.
 - `url_status` para cada post creado.
+- `pre_migration_url_risk_report.csv` para detectar sanitizacion de slug antes de migrar.
 - `redirect_candidates.csv` solo como reporte.
 - `orphan_media_report.csv` para media subida no usada.
 - `scan-local-references` antes de pasar a produccion.

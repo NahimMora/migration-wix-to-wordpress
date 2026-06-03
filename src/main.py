@@ -24,7 +24,7 @@ from .seo_auditor import (
     scan_local_references,
     verify_import_sample,
 )
-from .url_manager import analyze_urls
+from .url_manager import PRE_MIGRATION_URL_RISK_FIELDS, analyze_urls, pre_migration_url_risk_rows
 from .validators import positive_int, require_file
 from .wordpress_client import WordPressClient
 from .wix_category_normalizer import normalize_wix_categories
@@ -149,13 +149,25 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
 
     if command == "analyze-urls":
         file_path = require_file(resolve_file(settings, args.file))
-        result = analyze_urls(file_path)
+        result = analyze_urls(file_path, settings)
+        url_risk_rows = pre_migration_url_risk_rows(file_path, settings)
+        url_risk_count = export_rows(
+            settings,
+            "pre_migration_url_risk_report.csv",
+            url_risk_rows,
+            fieldnames=PRE_MIGRATION_URL_RISK_FIELDS,
+        )
         internal_rows = analyze_internal_links(file_path, settings)
         duplicate_rows = find_duplicate_posts(file_path)
         export_rows(settings, "internal_links_report.csv", internal_rows)
         export_rows(settings, "duplicate_posts_report.csv", duplicate_rows)
         db.record_audit("urls", "info", "URL analysis completed", result)
-        return {**result, "internal_links_report_rows": len(internal_rows), "duplicate_posts_report_rows": len(duplicate_rows)}
+        return {
+            **result,
+            "pre_migration_url_risk_report.csv": url_risk_count,
+            "internal_links_report_rows": len(internal_rows),
+            "duplicate_posts_report_rows": len(duplicate_rows),
+        }
 
     if command == "analyze-images":
         file_path = require_file(resolve_file(settings, args.file))
