@@ -41,8 +41,28 @@ class WordPressClient:
     def verify_posts_endpoint(self) -> dict[str, Any]:
         return self.request("GET", f"{self.settings.wp_v2_root}/posts", params={"per_page": 1})
 
+    def get_current_user(self) -> dict[str, Any]:
+        return self.request("GET", f"{self.settings.wp_v2_root}/users/me", params={"context": "edit"})
+
     def get_posts(self, **params: Any) -> list[dict[str, Any]]:
         return self.request("GET", f"{self.settings.wp_v2_root}/posts", params=params)
+
+    def list_posts(self, limit: int = 100, per_page: int = 100, **params: Any) -> list[dict[str, Any]]:
+        posts: list[dict[str, Any]] = []
+        page = 1
+        while len(posts) < limit:
+            batch = self.request(
+                "GET",
+                f"{self.settings.wp_v2_root}/posts",
+                params={**params, "per_page": min(per_page, limit - len(posts)), "page": page},
+            )
+            if not batch:
+                return posts
+            posts.extend(batch)
+            if len(batch) < per_page:
+                return posts
+            page += 1
+        return posts[:limit]
 
     def get_post(self, post_id: int, context: str = "edit") -> dict[str, Any]:
         return self.request("GET", f"{self.settings.wp_v2_root}/posts/{post_id}", params={"context": context})

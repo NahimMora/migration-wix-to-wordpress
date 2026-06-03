@@ -2,13 +2,14 @@
 
 ## Confirmacion operativa
 
-El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-*` y `dry-run` no crean posts ni suben imagenes. El unico comando que escribe en WordPress es `migrate`.
+El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-*` y `dry-run` no crean posts ni suben imagenes. El unico comando que escribe en WordPress es `migrate`. `cleanup-test-batch` esta limitado a `--dry-run` en esta version.
 
 ## Arquitectura
 
 - Python orquesta lectura de CSV, normalizacion, validacion y REST API.
 - SQLite guarda estados, IDs Wix, IDs WordPress, URLs y errores.
 - WordPress REST API crea posts y media.
+- `verify-wordpress` prueba REST, autenticacion, posts y categorias sin escribir.
 - El plugin auxiliar registra meta fields REST y reduce tamanos intermedios innecesarios.
 - Los reportes quedan en `data/output/`.
 
@@ -33,6 +34,7 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 - `orphan_media_report.csv` para media subida no usada.
 - `scan-local-references` antes de pasar a produccion.
 - `DEFAULT_POST_STATUS=draft` por defecto.
+- `csv_imports` registra importaciones de CSV para auditoria.
 
 ## Decisiones tecnicas
 

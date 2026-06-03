@@ -146,5 +146,6 @@ def import_csv(file_path: Path, settings: Settings, db: MigrationDB, limit: int 
         "category_map": category_result,
         "warnings": warnings + category_result.get("warnings", []),
     }
+    db.record_csv_import(str(file_path), len(rows), imported, skipped, result["warnings"])
     db.record_audit("csv", "info", "CSV import completed", result)
     return result

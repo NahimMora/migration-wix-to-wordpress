@@ -15,6 +15,7 @@ from .image_manager import analyze_images
 from .logger import setup_logging
 from .post_manager import PostMigrationManager
 from .preflight import verify_categories, verify_wordpress
+from .preflight import scan_existing_wordpress
 from .reports import export_migration_manifest, export_reports, export_rows
 from .seo_auditor import (
     analyze_internal_links,
@@ -88,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     verify_import_parser.add_argument("--limit", type=int, default=100)
 
     subparsers.add_parser("export-migration-manifest")
+
+    scan_existing_parser = subparsers.add_parser("scan-existing-wordpress")
+    scan_existing_parser.add_argument("--limit", type=int, default=100)
+
+    cleanup_parser = subparsers.add_parser("cleanup-test-batch")
+    cleanup_parser.add_argument("--batch", required=True)
+    cleanup_parser.add_argument("--dry-run", action="store_true", required=True)
     return parser
 
 
@@ -165,6 +173,17 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
 
     if command == "export-migration-manifest":
         return export_migration_manifest(settings, db)
+
+    if command == "scan-existing-wordpress":
+        rows = scan_existing_wordpress(settings, db, logger, positive_int(args.limit, 100))
+        count = export_rows(settings, "existing_wordpress_posts_report.csv", rows)
+        return {"existing_wordpress_posts_report.csv": count, "rows": rows}
+
+    if command == "cleanup-test-batch":
+        if not args.dry_run:
+            raise ValueError("cleanup-test-batch refuses to run without --dry-run in this version")
+        manager = PostMigrationManager(settings, db, logger)
+        return manager.cleanup_test_batch_preview(args.batch)
 
     raise ValueError(f"Unknown command: {command}")
 

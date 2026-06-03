@@ -102,6 +102,16 @@ CREATE TABLE IF NOT EXISTS audit_results (
     data TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS csv_imports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    total_rows INTEGER NOT NULL DEFAULT 0,
+    imported_rows INTEGER NOT NULL DEFAULT 0,
+    skipped_rows INTEGER NOT NULL DEFAULT 0,
+    warnings TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -186,6 +196,20 @@ class MigrationDB:
         if old_url:
             return self.query_one("SELECT * FROM posts_migration WHERE old_url = ?", (str(old_url),))
         return None
+
+    def find_created_post_by_slug(self, desired_slug: str, exclude_id: int | None = None) -> dict[str, Any] | None:
+        params: list[Any] = [desired_slug]
+        sql = """
+            SELECT * FROM posts_migration
+            WHERE desired_slug = ?
+              AND wp_post_id IS NOT NULL
+              AND status IN ('created', 'skipped_existing')
+        """
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(exclude_id)
+        sql += " ORDER BY id ASC LIMIT 1"
+        return self.query_one(sql, tuple(params))
 
     def list_posts(
         self,
@@ -293,6 +317,23 @@ class MigrationDB:
                 VALUES (?, ?, ?, ?)
                 """,
                 (audit_type, severity, message, _json(data)),
+            )
+
+    def record_csv_import(
+        self,
+        file_path: str,
+        total_rows: int,
+        imported_rows: int,
+        skipped_rows: int,
+        warnings: Any = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO csv_imports (file_path, total_rows, imported_rows, skipped_rows, warnings)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (file_path, total_rows, imported_rows, skipped_rows, _json(warnings)),
             )
 
     def count(self, table: str, where: str = "", params: Sequence[Any] = ()) -> int:

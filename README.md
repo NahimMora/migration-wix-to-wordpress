@@ -196,7 +196,11 @@ python -m src.main scan-local-references
 python -m src.main report-orphan-media
 python -m src.main verify-import --limit 100
 python -m src.main export-migration-manifest
+python -m src.main scan-existing-wordpress --limit 100
+python -m src.main cleanup-test-batch --batch test-001 --dry-run
 ```
+
+`scan-existing-wordpress` solo lee posts existentes. `cleanup-test-batch` esta implementado como vista previa obligatoria con `--dry-run`; no borra posts ni media.
 
 ## Reportes
 

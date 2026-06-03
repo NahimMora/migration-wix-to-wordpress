@@ -99,6 +99,24 @@ class PostMigrationManager:
                 self._mark_post_failed(post, "validation", "; ".join(validation_warnings), raw_payload)
                 continue
 
+            existing_slug_post = self.db.find_created_post_by_slug(str(post.get("desired_slug") or ""), int(post["id"]))
+            if existing_slug_post:
+                skipped += 1
+                message = f"desired_slug already created in post_id={existing_slug_post['id']}"
+                self.db.update_post(
+                    int(post["id"]),
+                    status="skipped_existing",
+                    wp_post_id=existing_slug_post.get("wp_post_id"),
+                    wp_slug_final=existing_slug_post.get("wp_slug_final"),
+                    new_url=existing_slug_post.get("new_url"),
+                    url_status="duplicate_slug_changed",
+                    error_message=message,
+                    migration_batch=batch_label,
+                )
+                self.db.record_error("post", post.get("id"), "duplicate_slug", message, raw_payload)
+                self.logger.warning("[Post skipped] wix_id=%s %s", post.get("wix_id"), message)
+                continue
+
             image_result = self._handle_image(post, client)
             if image_result.error and not self.settings.create_post_if_image_fails:
                 failed += 1
@@ -145,6 +163,38 @@ class PostMigrationManager:
 
     def retry_failed(self, limit: int | None = None) -> MigrationSummary:
         return self.migrate(limit=limit, statuses=["failed", "retry_pending", "image_uploaded_post_failed"])
+
+    def cleanup_test_batch_preview(self, batch: str) -> dict[str, Any]:
+        posts = self.db.query(
+            """
+            SELECT id, wix_id, old_url, wp_post_id, new_url, status, migration_batch
+            FROM posts_migration
+            WHERE migration_batch = ?
+            ORDER BY id ASC
+            """,
+            (batch,),
+        )
+        media_ids = [
+            row["featured_media_id"]
+            for row in self.db.query(
+                """
+                SELECT featured_media_id
+                FROM posts_migration
+                WHERE migration_batch = ? AND featured_media_id IS NOT NULL
+                ORDER BY id ASC
+                """,
+                (batch,),
+            )
+        ]
+        return {
+            "batch": batch,
+            "dry_run": True,
+            "will_delete_posts": False,
+            "will_delete_media": False,
+            "candidate_posts": posts,
+            "candidate_media_ids": media_ids,
+            "note": "Preview only. No WordPress content was modified.",
+        }
 
     def _load_source_if_needed(self, source_file: str | None, limit: int | None) -> None:
         if self.db.count("posts_migration") > 0:
