@@ -181,6 +181,7 @@ Si todo esta correcto, repetir con 100, 1.000 y 10.000. Recien despues evaluar l
 
 ```bash
 python -m src.main init-db
+python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-csv --file data/input/wix_posts.csv
 python -m src.main analyze-urls --file data/input/wix_posts.csv
 python -m src.main analyze-images --file data/input/wix_posts.csv
@@ -207,6 +208,15 @@ python -m src.main cleanup-test-batch --batch test-001 --dry-run
 `migrate` y `retry-failed` son comandos de escritura y fallan de forma intencional mientras `ALLOW_WORDPRESS_WRITES=false`.
 
 `test-image-download` solo intenta descargar una imagen y validar el archivo local; no crea posts, no sube media y no usa WordPress REST API.
+
+`normalize-wix-csv` adapta el CSV real exportado por Wix al schema canónico del migrador. Lee columnas como `id`, `contentText`, `richContent`, `firstPublishedDate`, `categoryIds`, `media`, `url.path` y `publicUrl`, y genera:
+
+```txt
+data/input/wix_posts_normalized_0001.csv
+data/output/normalize_wix_csv_report.csv
+```
+
+El comando no escribe en WordPress. El CSV normalizado queda ignorado por Git porque puede contener datos reales.
 
 ## Reportes
 

@@ -4,6 +4,7 @@
 
 Avanzar de escala solo si:
 
+- el CSV real de Wix fue normalizado con `normalize-wix-csv`;
 - `verify-wordpress` pasa;
 - `verify-categories` pasa o los warnings estan aceptados;
 - `dry-run` no muestra errores criticos;
@@ -13,6 +14,14 @@ Avanzar de escala solo si:
 - no hay referencias locales antes de preparar Hostinger.
 
 ## Prueba 10
+
+Si se parte de un export real de Wix:
+
+```bash
+python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
+python -m src.main analyze-csv --file data/input/wix_posts_normalized_0001.csv
+python -m src.main analyze-urls --file data/input/wix_posts_normalized_0001.csv
+```
 
 Antes de migrar una muestra, probar 2 o 3 URLs reales de imagen:
 

@@ -60,6 +60,7 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 
 ```bash
 python -m src.main init-db
+python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-csv --file data/input/wix_posts.csv
 python -m src.main analyze-urls --file data/input/wix_posts.csv
 python -m src.main analyze-images --file data/input/wix_posts.csv
