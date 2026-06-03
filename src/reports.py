@@ -32,7 +32,7 @@ def export_reports(settings: Settings, db: MigrationDB) -> dict[str, int]:
     counts = {
         "posts_report.csv": write_csv(settings.output_dir / "posts_report.csv", db.query("SELECT * FROM posts_migration ORDER BY id ASC")),
         "images_report.csv": write_csv(settings.output_dir / "images_report.csv", db.query("SELECT * FROM images_migration ORDER BY id ASC")),
-        "errors_report.csv": write_csv(settings.output_dir / "errors_report.csv", db.query("SELECT * FROM errors ORDER BY id ASC")),
+        "errors_report.csv": write_csv(settings.output_dir / "errors_report.csv", export_errors_report(db)),
         "orphan_media_report.csv": write_csv(settings.output_dir / "orphan_media_report.csv", report_orphan_media(db)),
     }
     url_counts = export_url_reports(settings, db)
@@ -86,6 +86,32 @@ def export_rows(settings: Settings, filename: str, rows: Iterable[dict[str, Any]
     return write_csv(settings.output_dir / filename, rows, fieldnames=fieldnames)
 
 
+def export_errors_report(db: MigrationDB) -> list[dict[str, Any]]:
+    rows = db.query("SELECT * FROM errors ORDER BY id ASC")
+    download_roots = {
+        _payload_value(row.get("raw_payload"), "source_url")
+        for row in rows
+        if row.get("stage") == "download_image"
+    }
+    report_rows: list[dict[str, Any]] = []
+    for row in rows:
+        report_row = dict(row)
+        report_row["error_origin"] = "root"
+        report_row["related_root_stage"] = ""
+        if row.get("stage") in {"prepare_image", "prepare_image_unexpected"}:
+            image_url = _payload_value(row.get("raw_payload"), "image_url")
+            if image_url and image_url in download_roots:
+                report_row["error_origin"] = "derived"
+                report_row["related_root_stage"] = "download_image"
+                report_row["error_note"] = "Derived post-level image handling error; root download error is reported separately."
+            else:
+                report_row["error_note"] = "Unexpected image preparation error."
+        else:
+            report_row["error_note"] = ""
+        report_rows.append(report_row)
+    return report_rows
+
+
 def export_migration_manifest(settings: Settings, db: MigrationDB) -> dict[str, Any]:
     posts_by_status = _counts(db, "posts_migration", "status")
     images_by_status = _counts(db, "images_migration", "status")
@@ -130,6 +156,21 @@ def export_migration_manifest(settings: Settings, db: MigrationDB) -> dict[str, 
 def _counts(db: MigrationDB, table: str, column: str) -> dict[str, int]:
     rows = db.query(f"SELECT COALESCE({column}, '') AS value, COUNT(*) AS total FROM {table} GROUP BY value")
     return {str(row["value"]): int(row["total"]) for row in rows}
+
+
+def _payload_value(raw_payload: Any, key: str) -> str:
+    if not raw_payload:
+        return ""
+    if isinstance(raw_payload, dict):
+        return str(raw_payload.get(key) or "")
+    if isinstance(raw_payload, str):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return ""
+        if isinstance(payload, dict):
+            return str(payload.get(key) or "")
+    return ""
 
 
 def _folder_size(path: Path) -> int:

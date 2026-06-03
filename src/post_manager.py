@@ -12,7 +12,7 @@ from .config import Settings
 from .csv_loader import import_csv
 from .database import MigrationDB
 from .html_cleaner import clean_html
-from .image_manager import ImageManager, ImageResult
+from .image_manager import ImageDownloadError, ImageManager, ImageResult
 from .normalizer import clean_text
 from .url_manager import build_new_url, classify_url_status
 from .validators import validate_default_post_status, validate_source_post
@@ -217,8 +217,20 @@ class PostMigrationManager:
             return ImageResult(source_url="", status="missing_image")
         try:
             return self.image_manager.prepare_and_upload(image_url, client, title=post.get("title"))
+        except ImageDownloadError as exc:
+            return ImageResult(
+                source_url=image_url,
+                status="failed_download",
+                error=exc.probe.error_detail or exc.probe.error_type or str(exc),
+            )
         except Exception as exc:
-            self.db.record_error("image", post.get("id"), "prepare_image", str(exc), {"image_url": image_url})
+            self.db.record_error(
+                "image",
+                post.get("id"),
+                "prepare_image_unexpected",
+                str(exc),
+                {"image_url": image_url, "derived_from": "prepare_image"},
+            )
             return ImageResult(source_url=image_url, status="failed_download", error=str(exc))
 
     def _build_post_payload(

@@ -11,7 +11,7 @@ from .category_mapper import load_category_map
 from .config import Settings, load_settings
 from .csv_loader import analyze_csv, import_csv
 from .database import MigrationDB
-from .image_manager import analyze_images
+from .image_manager import analyze_images, test_image_download
 from .logger import setup_logging
 from .post_manager import PostMigrationManager
 from .preflight import verify_categories, verify_wordpress
@@ -62,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze_images_parser = subparsers.add_parser("analyze-images")
     analyze_images_parser.add_argument("--file", required=True)
+
+    test_image_parser = subparsers.add_parser("test-image-download")
+    test_image_parser.add_argument("--url", required=True)
 
     subparsers.add_parser("verify-wordpress")
     subparsers.add_parser("verify-categories")
@@ -123,6 +126,11 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
         file_path = require_file(resolve_file(settings, args.file))
         result = analyze_images(file_path)
         db.record_audit("images", "info", "Image analysis completed", result)
+        return result
+
+    if command == "test-image-download":
+        result = test_image_download(args.url, settings)
+        db.record_audit("images", "info" if result.get("ok") else "warning", "Single image download test completed", result)
         return result
 
     if command == "verify-wordpress":

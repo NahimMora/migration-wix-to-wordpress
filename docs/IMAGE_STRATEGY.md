@@ -60,3 +60,20 @@ Si falla la imagen:
 
 - con `CREATE_POST_IF_IMAGE_FAILS=true`, el post puede crearse sin featured image y se registra error;
 - con `false`, el post queda `failed`.
+
+## Diagnostico aislado
+
+Antes de escalar, probar URLs reales con:
+
+```bash
+python -m src.main test-image-download --url "https://static.wixstatic.com/media/..."
+```
+
+El comando no sube imagenes ni crea posts. Informa status HTTP, URL final luego de redirects, `Content-Type`, `Content-Length`, bytes descargados, validez de imagen, dimensiones, hash y tipo exacto de error.
+
+La descarga usa User-Agent configurable y timeout configurable:
+
+```env
+IMAGE_DOWNLOAD_TIMEOUT=60
+IMAGE_DOWNLOAD_USER_AGENT=Mozilla/5.0 ...
+```

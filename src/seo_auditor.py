@@ -93,12 +93,16 @@ def scan_local_references(settings: Settings, db: MigrationDB) -> list[dict[str,
                         "wix_id": post.get("wix_id"),
                         "old_url": post.get("old_url"),
                         "pattern": pattern,
+                        "severity": "critical",
                         "status": "review_required",
+                        "reason": "local reference is inside migratable post content or meta",
                     }
                 )
 
     for output_file in settings.output_dir.glob("*"):
         if not output_file.is_file():
+            continue
+        if output_file.name == "local_references_report.csv":
             continue
         try:
             content = output_file.read_text(encoding="utf-8", errors="ignore")
@@ -106,6 +110,7 @@ def scan_local_references(settings: Settings, db: MigrationDB) -> list[dict[str,
             continue
         for pattern in LOCAL_REFERENCE_PATTERNS:
             if pattern in content:
+                severity = _report_reference_severity(pattern)
                 report_rows.append(
                     {
                         "entity_type": "report",
@@ -113,7 +118,9 @@ def scan_local_references(settings: Settings, db: MigrationDB) -> list[dict[str,
                         "wix_id": "",
                         "old_url": "",
                         "pattern": pattern,
-                        "status": "review_required",
+                        "severity": severity,
+                        "status": "local_runtime_path" if severity == "info" else "review_required",
+                        "reason": _report_reference_reason(pattern, severity),
                     }
                 )
     return report_rows
@@ -187,3 +194,15 @@ def _nested(data: dict[str, Any], *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def _report_reference_severity(pattern: str) -> str:
+    if pattern in {"C:\\", "c:\\"}:
+        return "info"
+    return "warning"
+
+
+def _report_reference_reason(pattern: str, severity: str) -> str:
+    if severity == "info":
+        return "Windows path inside generated output; not a blocker for local testing"
+    return f"Local reference pattern found in generated report: {pattern}"

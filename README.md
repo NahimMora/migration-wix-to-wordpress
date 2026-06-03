@@ -184,6 +184,7 @@ python -m src.main init-db
 python -m src.main analyze-csv --file data/input/wix_posts.csv
 python -m src.main analyze-urls --file data/input/wix_posts.csv
 python -m src.main analyze-images --file data/input/wix_posts.csv
+python -m src.main test-image-download --url "https://static.wixstatic.com/media/..."
 python -m src.main verify-wordpress
 python -m src.main verify-categories
 python -m src.main import-csv --file data/input/wix_posts.csv
@@ -204,6 +205,8 @@ python -m src.main cleanup-test-batch --batch test-001 --dry-run
 `scan-existing-wordpress` solo lee posts existentes. `cleanup-test-batch` esta implementado como vista previa obligatoria con `--dry-run`; no borra posts ni media.
 
 `migrate` y `retry-failed` son comandos de escritura y fallan de forma intencional mientras `ALLOW_WORDPRESS_WRITES=false`.
+
+`test-image-download` solo intenta descargar una imagen y validar el archivo local; no crea posts, no sube media y no usa WordPress REST API.
 
 ## Reportes
 

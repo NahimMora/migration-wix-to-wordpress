@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS images_migration (
     width INTEGER,
     height INTEGER,
     mime_type TEXT,
+    http_status_code INTEGER,
+    final_url TEXT,
+    content_type_received TEXT,
+    content_length_received INTEGER,
+    downloaded_bytes INTEGER,
+    download_error_type TEXT,
+    download_error_detail TEXT,
     wp_media_id INTEGER,
     wp_media_url TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -138,6 +145,19 @@ class MigrationDB:
     def initialize(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            _ensure_columns(
+                conn,
+                "images_migration",
+                {
+                    "http_status_code": "INTEGER",
+                    "final_url": "TEXT",
+                    "content_type_received": "TEXT",
+                    "content_length_received": "INTEGER",
+                    "downloaded_bytes": "INTEGER",
+                    "download_error_type": "TEXT",
+                    "download_error_detail": "TEXT",
+                },
+            )
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         with self.connect() as conn:
@@ -361,3 +381,10 @@ def _json(value: Any) -> str | None:
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=True, default=str)
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: Mapping[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for column, column_type in columns.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")

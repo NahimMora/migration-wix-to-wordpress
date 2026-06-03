@@ -65,6 +65,8 @@ class Settings:
     request_delay: float
     max_retries: int
     retry_backoff_seconds: float
+    image_download_timeout: float
+    image_download_user_agent: str
     create_post_if_image_fails: bool
     normalize_images: bool
     normalize_only_if_needed: bool
@@ -117,6 +119,11 @@ def load_settings(env_file: Path | None = None) -> Settings:
         request_delay=_float("REQUEST_DELAY", 0.2),
         max_retries=_int("MAX_RETRIES", 3),
         retry_backoff_seconds=_float("RETRY_BACKOFF_SECONDS", 2),
+        image_download_timeout=_float("IMAGE_DOWNLOAD_TIMEOUT", 60),
+        image_download_user_agent=_str(
+            "IMAGE_DOWNLOAD_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36",
+        ),
         create_post_if_image_fails=_bool("CREATE_POST_IF_IMAGE_FAILS", True),
         normalize_images=_bool("NORMALIZE_IMAGES", True),
         normalize_only_if_needed=_bool("NORMALIZE_ONLY_IF_NEEDED", True),

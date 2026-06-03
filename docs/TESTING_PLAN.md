@@ -14,6 +14,12 @@ Avanzar de escala solo si:
 
 ## Prueba 10
 
+Antes de migrar una muestra, probar 2 o 3 URLs reales de imagen:
+
+```bash
+python -m src.main test-image-download --url "https://static.wixstatic.com/media/..."
+```
+
 ```bash
 python -m src.main dry-run --limit 10
 python -m src.main migrate --limit 10
