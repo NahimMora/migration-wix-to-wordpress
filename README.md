@@ -164,7 +164,7 @@ Hace:
 
 - valida campos;
 - normaliza slug;
-- resuelve categoria;
+- resuelve categoria y muestra `category_resolution` por post;
 - simula payload de post;
 - simula plan de media;
 - registra `dry_run_valid` si corresponde.

@@ -8,6 +8,7 @@ from logging import Logger
 from pathlib import Path
 from typing import Any, Iterable
 
+from .category_mapper import load_category_map, resolve_category_detail
 from .config import Settings
 from .csv_loader import import_csv
 from .database import MigrationDB
@@ -36,6 +37,10 @@ class PostMigrationManager:
 
     def dry_run(self, limit: int = 10, source_file: str | None = None) -> list[dict[str, Any]]:
         self._load_source_if_needed(source_file, limit)
+        category_map_result = load_category_map(self.settings.input_dir / "category_map.csv", self.db)
+        for warning in category_map_result.get("warnings", []):
+            self.db.record_audit("dry_run", "warning", warning)
+            self.logger.warning(warning)
         warnings = validate_default_post_status(self.settings.default_post_status)
         for warning in warnings:
             self.db.record_audit("dry_run", "warning", warning)
@@ -45,14 +50,24 @@ class PostMigrationManager:
         results: list[dict[str, Any]] = []
         for post in posts:
             raw_payload = _json_loads(post.get("raw_payload"))
-            validation_warnings = validate_source_post(raw_payload, post)
+            category_resolution = resolve_category_detail(
+                self.db,
+                post.get("category_source"),
+                self.settings.default_category_id,
+            )
+            post_for_payload = {
+                **post,
+                "wp_category_id": category_resolution["wp_category_id"],
+            }
+            validation_warnings = validate_source_post(raw_payload, post_for_payload)
             image_plan = self.image_manager.dry_run_plan(post.get("featured_image_url"))
-            payload = self._build_post_payload(post, raw_payload, image_result=image_plan, dry_run=True)
+            payload = self._build_post_payload(post_for_payload, raw_payload, image_result=image_plan, dry_run=True)
             status = "dry_run_valid" if not validation_warnings else "failed"
 
             self.db.update_post(
                 int(post["id"]),
                 status=status,
+                wp_category_id=category_resolution["wp_category_id"],
                 error_message="; ".join(validation_warnings) if validation_warnings else None,
             )
             result = {
@@ -62,6 +77,7 @@ class PostMigrationManager:
                 "desired_slug": post.get("desired_slug"),
                 "status": status,
                 "warnings": validation_warnings,
+                "category_resolution": category_resolution,
                 "post_payload": payload,
                 "image_plan": image_plan.plan,
             }

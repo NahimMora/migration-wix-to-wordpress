@@ -85,6 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_images_status ON images_migration(status);
 CREATE TABLE IF NOT EXISTS categories_mapping (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     wix_category TEXT NOT NULL UNIQUE,
+    wix_category_alias_type TEXT,
     wp_category_id INTEGER NOT NULL,
     wp_category_name TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -156,6 +157,13 @@ class MigrationDB:
                     "downloaded_bytes": "INTEGER",
                     "download_error_type": "TEXT",
                     "download_error_detail": "TEXT",
+                },
+            )
+            _ensure_columns(
+                conn,
+                "categories_mapping",
+                {
+                    "wix_category_alias_type": "TEXT",
                 },
             )
 
@@ -292,18 +300,25 @@ class MigrationDB:
     def update_image(self, image_id: int, **fields: Any) -> None:
         self._update_table("images_migration", image_id, fields)
 
-    def upsert_category(self, wix_category: str, wp_category_id: int, wp_category_name: str = "") -> None:
+    def upsert_category(
+        self,
+        wix_category: str,
+        wp_category_id: int,
+        wp_category_name: str = "",
+        wix_category_alias_type: str = "",
+    ) -> None:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT INTO categories_mapping (wix_category, wp_category_id, wp_category_name)
-                VALUES (?, ?, ?)
+                INSERT INTO categories_mapping (wix_category, wix_category_alias_type, wp_category_id, wp_category_name)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(wix_category) DO UPDATE SET
+                    wix_category_alias_type=excluded.wix_category_alias_type,
                     wp_category_id=excluded.wp_category_id,
                     wp_category_name=excluded.wp_category_name,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (wix_category, wp_category_id, wp_category_name),
+                (wix_category, wix_category_alias_type, wp_category_id, wp_category_name),
             )
 
     def clear_categories(self) -> None:
@@ -311,6 +326,25 @@ class MigrationDB:
 
     def get_category(self, wix_category: str) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM categories_mapping WHERE wix_category = ?", (wix_category,))
+
+    def get_category_by_wp_id(self, wp_category_id: int) -> dict[str, Any] | None:
+        return self.query_one(
+            """
+            SELECT *
+            FROM categories_mapping
+            WHERE wp_category_id = ?
+            ORDER BY
+                CASE wix_category_alias_type
+                    WHEN 'wix_category_name' THEN 0
+                    WHEN 'wix_category_slug' THEN 1
+                    WHEN 'wix_category_id' THEN 2
+                    ELSE 3
+                END,
+                id ASC
+            LIMIT 1
+            """,
+            (wp_category_id,),
+        )
 
     def list_categories(self) -> list[dict[str, Any]]:
         return self.query("SELECT * FROM categories_mapping ORDER BY wix_category ASC")
