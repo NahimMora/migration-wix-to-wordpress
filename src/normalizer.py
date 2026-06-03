@@ -29,6 +29,9 @@ def normalize_wix_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "title": clean_text(row.get("title")) or "(sin titulo)",
         "source_date": normalize_date(row.get("date")),
         "category_source": clean_text(row.get("category")) or None,
+        "author_source_id": clean_text(row.get("author_source_id")) or None,
+        "author_source_slug": clean_text(row.get("author_source_slug")) or None,
+        "wp_author_id": clean_text(row.get("author")) or None,
         "featured_image_url": clean_text(row.get("image_url")) or None,
         "raw_payload": dict(row),
     }

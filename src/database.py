@@ -26,8 +26,14 @@ CREATE TABLE IF NOT EXISTS posts_migration (
     wp_date TEXT,
     category_source TEXT,
     wp_category_id INTEGER,
+    author_source_id TEXT,
+    author_source_slug TEXT,
+    wp_author_id INTEGER,
     featured_image_url TEXT,
     featured_media_id INTEGER,
+    source_file TEXT,
+    source_file_index INTEGER,
+    run_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     url_status TEXT,
     migration_batch TEXT,
@@ -120,6 +126,42 @@ CREATE TABLE IF NOT EXISTS csv_imports (
     warnings TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS migration_runs (
+    run_id TEXT PRIMARY KEY,
+    input_dir TEXT,
+    pattern TEXT,
+    start_index INTEGER,
+    end_index INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT,
+    finished_at TEXT,
+    data TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS migration_run_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_index INTEGER NOT NULL,
+    file_hash TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    rows_total INTEGER NOT NULL DEFAULT 0,
+    rows_imported INTEGER NOT NULL DEFAULT 0,
+    rows_created INTEGER NOT NULL DEFAULT 0,
+    rows_failed INTEGER NOT NULL DEFAULT 0,
+    images_uploaded INTEGER NOT NULL DEFAULT 0,
+    images_reused INTEGER NOT NULL DEFAULT 0,
+    redirect_candidates INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT,
+    finished_at TEXT,
+    error_message TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(run_id, file_index)
+);
 """
 
 
@@ -166,6 +208,18 @@ class MigrationDB:
                     "wix_category_alias_type": "TEXT",
                 },
             )
+            _ensure_columns(
+                conn,
+                "posts_migration",
+                {
+                    "author_source_id": "TEXT",
+                    "author_source_slug": "TEXT",
+                    "wp_author_id": "INTEGER",
+                    "source_file": "TEXT",
+                    "source_file_index": "INTEGER",
+                    "run_id": "TEXT",
+                },
+            )
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         with self.connect() as conn:
@@ -193,7 +247,13 @@ class MigrationDB:
             "source_date": row.get("source_date") or row.get("date"),
             "category_source": row.get("category_source") or row.get("category"),
             "wp_category_id": row.get("wp_category_id"),
+            "author_source_id": row.get("author_source_id"),
+            "author_source_slug": row.get("author_source_slug"),
+            "wp_author_id": row.get("wp_author_id"),
             "featured_image_url": row.get("featured_image_url") or row.get("image_url"),
+            "source_file": row.get("source_file"),
+            "source_file_index": row.get("source_file_index"),
+            "run_id": row.get("run_id"),
             "raw_payload": payload,
         }
 
@@ -244,6 +304,8 @@ class MigrationDB:
         statuses: Iterable[str] | None = None,
         limit: int | None = None,
         include_failed: bool = False,
+        source_file: str | None = None,
+        run_id: str | None = None,
     ) -> list[dict[str, Any]]:
         params: list[Any] = []
         where = []
@@ -253,6 +315,12 @@ class MigrationDB:
             params.extend(status_values)
         elif not include_failed:
             where.append("status NOT IN ('created', 'skipped_existing')")
+        if source_file:
+            where.append("source_file = ?")
+            params.append(source_file)
+        if run_id:
+            where.append("run_id = ?")
+            params.append(run_id)
 
         sql = "SELECT * FROM posts_migration"
         if where:
@@ -399,6 +467,80 @@ class MigrationDB:
             sql += f" WHERE {where}"
         row = self.query_one(sql, params)
         return int(row["total"]) if row else 0
+
+    def upsert_run(
+        self,
+        run_id: str,
+        input_dir: str,
+        pattern: str,
+        start_index: int,
+        end_index: int,
+        status: str = "pending",
+        data: Any = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO migration_runs (run_id, input_dir, pattern, start_index, end_index, status, started_at, data)
+                VALUES (?, ?, ?, ?, ?, ?, COALESCE(CURRENT_TIMESTAMP, ''), ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    input_dir=excluded.input_dir,
+                    pattern=excluded.pattern,
+                    start_index=excluded.start_index,
+                    end_index=excluded.end_index,
+                    status=excluded.status,
+                    data=excluded.data,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (run_id, input_dir, pattern, start_index, end_index, status, _json(data)),
+            )
+
+    def update_run(self, run_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        values = {key: _json(value) if key == "data" else value for key, value in fields.items()}
+        assignments = ", ".join(f"{key}=?" for key in values)
+        self.execute(
+            f"UPDATE migration_runs SET {assignments}, updated_at=CURRENT_TIMESTAMP WHERE run_id=?",
+            tuple(values.values()) + (run_id,),
+        )
+
+    def get_run(self, run_id: str) -> dict[str, Any] | None:
+        return self.query_one("SELECT * FROM migration_runs WHERE run_id = ?", (run_id,))
+
+    def upsert_run_file(self, run_id: str, file_index: int, file_name: str, **fields: Any) -> None:
+        values = {
+            "run_id": run_id,
+            "file_index": file_index,
+            "file_name": file_name,
+            **fields,
+        }
+        columns = ", ".join(values)
+        placeholders = ", ".join("?" for _ in values)
+        updates = ", ".join(f"{key}=excluded.{key}" for key in values if key not in {"run_id", "file_index"})
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO migration_run_files ({columns})
+                VALUES ({placeholders})
+                ON CONFLICT(run_id, file_index) DO UPDATE SET
+                    {updates},
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                tuple(values.values()),
+            )
+
+    def update_run_file(self, run_id: str, file_index: int, **fields: Any) -> None:
+        if not fields:
+            return
+        assignments = ", ".join(f"{key}=?" for key in fields)
+        self.execute(
+            f"UPDATE migration_run_files SET {assignments}, updated_at=CURRENT_TIMESTAMP WHERE run_id=? AND file_index=?",
+            tuple(fields.values()) + (run_id, file_index),
+        )
+
+    def list_run_files(self, run_id: str) -> list[dict[str, Any]]:
+        return self.query("SELECT * FROM migration_run_files WHERE run_id = ? ORDER BY file_index ASC", (run_id,))
 
     def _update_table(self, table: str, item_id: int, fields: Mapping[str, Any]) -> None:
         if not fields:

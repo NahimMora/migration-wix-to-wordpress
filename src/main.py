@@ -9,6 +9,8 @@ from typing import Any
 
 from .category_mapper import load_category_map
 from .config import Settings, load_settings
+from .content_formatter import preview_content_format
+from .author_mapper import list_wordpress_users, verify_authors
 from .csv_loader import analyze_csv, import_csv
 from .database import MigrationDB
 from .image_manager import analyze_images, test_image_download
@@ -17,6 +19,14 @@ from .meta_support import test_meta_draft_dry_run, verify_meta_support
 from .post_manager import PostMigrationManager
 from .preflight import verify_categories, verify_wordpress
 from .preflight import scan_existing_wordpress
+from .range_runner import (
+    RangeSpec,
+    export_run_report,
+    migrate_range,
+    preflight_range,
+    resume_run,
+    run_status,
+)
 from .reports import export_migration_manifest, export_reports, export_rows
 from .seo_auditor import (
     analyze_internal_links,
@@ -64,6 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_wix_parser.add_argument("--file", required=True)
     normalize_wix_parser.add_argument("--output", required=True)
 
+    preview_content_parser = subparsers.add_parser("preview-content-format")
+    preview_content_parser.add_argument("--file", required=True)
+    preview_content_parser.add_argument("--limit", type=int, default=5)
+
     normalize_wix_categories_parser = subparsers.add_parser("normalize-wix-categories")
     normalize_wix_categories_parser.add_argument("--file", required=True)
     normalize_wix_categories_parser.add_argument("--output", required=True)
@@ -83,6 +97,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("verify-wordpress")
     subparsers.add_parser("verify-categories")
+    subparsers.add_parser("verify-authors")
+    subparsers.add_parser("list-wordpress-users")
     subparsers.add_parser("verify-meta-support")
 
     test_meta_parser = subparsers.add_parser("test-meta-draft")
@@ -99,6 +115,23 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser = subparsers.add_parser("migrate")
     migrate_parser.add_argument("--limit", type=int)
     migrate_parser.add_argument("--batch-size", type=int)
+
+    preflight_range_parser = subparsers.add_parser("preflight-range")
+    add_range_args(preflight_range_parser, require_run_id=False)
+    preflight_range_parser.add_argument("--sample-files", type=int, default=5)
+
+    migrate_range_parser = subparsers.add_parser("migrate-range")
+    add_range_args(migrate_range_parser, require_run_id=True)
+    migrate_range_parser.add_argument("--force", action="store_true")
+
+    resume_parser = subparsers.add_parser("resume-run")
+    resume_parser.add_argument("--run-id", required=True)
+
+    status_parser = subparsers.add_parser("run-status")
+    status_parser.add_argument("--run-id", required=True)
+
+    export_run_parser = subparsers.add_parser("export-run-report")
+    export_run_parser.add_argument("--run-id", required=True)
 
     retry_parser = subparsers.add_parser("retry-failed")
     retry_parser.add_argument("--limit", type=int)
@@ -136,9 +169,14 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
         output_path = resolve_file(settings, args.output)
         report_path = settings.output_dir / "normalize_wix_csv_report.csv"
         encoding_report_path = settings.output_dir / "encoding_report.csv"
-        result = normalize_wix_csv(file_path, output_path, report_path, encoding_report_path)
+        content_report_path = settings.output_dir / "content_format_report.csv"
+        result = normalize_wix_csv(file_path, output_path, report_path, encoding_report_path, settings, content_report_path)
         db.record_audit("csv", "info", "Wix CSV normalization completed", result)
         return result
+
+    if command == "preview-content-format":
+        file_path = require_file(resolve_file(settings, args.file))
+        return preview_content_format(file_path, settings, positive_int(args.limit, 5))
 
     if command == "normalize-wix-categories":
         file_path = require_file(resolve_file(settings, args.file))
@@ -192,6 +230,12 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
         load_category_map(settings.input_dir / "category_map.csv", db)
         return {"ok": verify_categories(settings, db, logger)}
 
+    if command == "list-wordpress-users":
+        return {"users": list_wordpress_users(settings)}
+
+    if command == "verify-authors":
+        return verify_authors(settings)
+
     if command == "verify-meta-support":
         result = verify_meta_support(settings, db)
         db.record_audit("wordpress_meta", "info" if result.get("ok") else "warning", "WordPress meta support verification completed", result)
@@ -214,6 +258,23 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
         manager = PostMigrationManager(settings, db, logger)
         summary = manager.migrate(limit=args.limit, batch_size=args.batch_size)
         return summary.__dict__
+
+    if command == "preflight-range":
+        spec = range_spec_from_args(settings, args, sample_files=positive_int(args.sample_files, 5))
+        return preflight_range(settings, db, spec)
+
+    if command == "migrate-range":
+        spec = range_spec_from_args(settings, args, force=args.force)
+        return migrate_range(settings, db, logger, spec)
+
+    if command == "resume-run":
+        return resume_run(settings, db, logger, args.run_id)
+
+    if command == "run-status":
+        return run_status(db, args.run_id)
+
+    if command == "export-run-report":
+        return export_run_report(settings, db, args.run_id)
 
     if command == "retry-failed":
         manager = PostMigrationManager(settings, db, logger)
@@ -263,6 +324,32 @@ def resolve_file(settings: Settings, value: str) -> Path:
     if path.is_absolute():
         return path
     return settings.root_dir / path
+
+
+def add_range_args(parser: argparse.ArgumentParser, require_run_id: bool) -> None:
+    parser.add_argument("--input-dir", required=True)
+    parser.add_argument("--pattern", required=True)
+    parser.add_argument("--start", type=int, required=True)
+    parser.add_argument("--end", type=int, required=True)
+    parser.add_argument("--run-id", required=require_run_id)
+
+
+def range_spec_from_args(
+    settings: Settings,
+    args: argparse.Namespace,
+    force: bool = False,
+    sample_files: int | None = None,
+) -> RangeSpec:
+    input_dir = resolve_file(settings, args.input_dir)
+    return RangeSpec(
+        input_dir=input_dir,
+        pattern=args.pattern,
+        start=positive_int(args.start, 1),
+        end=positive_int(args.end, 1),
+        run_id=args.run_id or "preflight_range",
+        force=force,
+        sample_files=sample_files,
+    )
 
 
 def print_json(data: Any) -> None:

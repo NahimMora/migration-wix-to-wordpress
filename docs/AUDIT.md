@@ -2,7 +2,7 @@
 
 ## Confirmacion operativa
 
-El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-*` y `dry-run` no crean posts ni suben imagenes. `migrate` y `retry-failed` son comandos de escritura, pero quedan bloqueados por defecto con `ALLOW_WORDPRESS_WRITES=false`. `cleanup-test-batch` esta limitado a `--dry-run` en esta version.
+El sistema no inicia migracion automaticamente. `init-db`, `normalize-*`, `preview-content-format`, `analyze-*`, `preflight-range`, `verify-*` y `dry-run` no crean posts ni suben imagenes. `migrate`, `migrate-range` y `retry-failed` son comandos de escritura, pero quedan bloqueados por defecto con `ALLOW_WORDPRESS_WRITES=false`. `cleanup-test-batch` esta limitado a `--dry-run` en esta version.
 
 ## Arquitectura
 
@@ -21,6 +21,8 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 - Duplicacion de media si no se deduplica por URL y hash.
 - Imagen subida correctamente y post fallado despues.
 - Categorias inexistentes o mal mapeadas.
+- Autores Wix sin mapeo hacia usuarios WordPress reales.
+- Contenido de Wix sin estructura de parrafos o con `richContent` invalido.
 - HTML de Wix con scripts, estilos o contenido vacio.
 - Referencias a `localhost`, `.local`, `127.0.0.1` o rutas Windows antes de subir a Hostinger.
 
@@ -34,6 +36,9 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 - `redirect_candidates.csv` solo como reporte.
 - `orphan_media_report.csv` para media subida no usada.
 - `scan-local-references` antes de pasar a produccion.
+- `verify-authors` antes de escalar una corrida real.
+- `preview-content-format` y `content_format_report.csv` para revisar estructura de parrafos.
+- `preflight-range` antes de ejecutar la corrida nocturna.
 - `DEFAULT_POST_STATUS=draft` por defecto.
 - `ALLOW_WORDPRESS_WRITES=false` por defecto.
 - `csv_imports` registra importaciones de CSV para auditoria.
@@ -52,6 +57,7 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 
 - Confirmar estructura real de URLs Wix.
 - Confirmar categorias y IDs en WordPress.
+- Completar `data/input/author_map.csv` con IDs reales de usuarios WordPress.
 - Confirmar zona horaria local.
 - Confirmar si se permite crear posts sin imagen si falla media.
 - Elegir herramienta de search-replace serializado para Hostinger.
@@ -61,13 +67,16 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 
 ```bash
 python -m src.main init-db
+python -m src.main preview-content-format --file data/input/noticias_0001.csv --limit 5
 python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-csv --file data/input/wix_posts.csv
 python -m src.main analyze-urls --file data/input/wix_posts.csv
 python -m src.main analyze-images --file data/input/wix_posts.csv
 python -m src.main verify-wordpress
 python -m src.main verify-categories
+python -m src.main verify-authors
 python -m src.main verify-meta-support
 python -m src.main test-meta-draft --dry-run
 python -m src.main dry-run --limit 10
+python -m src.main preflight-range --input-dir data/input --pattern "noticias_{num:04d}.csv" --start 1 --end 992 --sample-files 5
 ```

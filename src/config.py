@@ -61,10 +61,16 @@ class Settings:
     default_author_id: int
     default_category_id: int
     allow_wordpress_writes: bool
+    confirm_publish_mode: bool
     batch_size: int
     request_delay: float
     max_retries: int
     retry_backoff_seconds: float
+    content_format_mode: str
+    content_paragraph_heuristic: bool
+    max_paragraph_chars: int
+    min_sentences_per_paragraph: int
+    max_sentences_per_paragraph: int
     image_download_timeout: float
     image_download_user_agent: str
     create_post_if_image_fails: bool
@@ -76,6 +82,11 @@ class Settings:
     jpeg_quality: int
     keep_original_images: bool
     permalink_structure: str
+    max_post_failure_rate: float
+    max_image_failure_rate: float
+    stop_on_critical_url_errors: bool
+    stop_on_unmapped_category: bool
+    stop_on_unmapped_author: bool
 
     @property
     def wp_api_root(self) -> str:
@@ -86,8 +97,12 @@ class Settings:
         return f"{self.wp_api_root}/wp/v2"
 
     def ensure_runtime_dirs(self) -> None:
-        for path in (self.db_path.parent, self.output_dir, self.images_dir, self.logs_dir):
+        for path in (self.db_path.parent, self.output_dir, self.normalized_dir, self.images_dir, self.logs_dir):
             path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def normalized_dir(self) -> Path:
+        return self.root_dir / "data" / "normalized"
 
 
 def load_settings(env_file: Path | None = None) -> Settings:
@@ -115,10 +130,16 @@ def load_settings(env_file: Path | None = None) -> Settings:
         default_author_id=_int("DEFAULT_AUTHOR_ID", 1),
         default_category_id=_int("DEFAULT_CATEGORY_ID", 1),
         allow_wordpress_writes=_bool("ALLOW_WORDPRESS_WRITES", False),
+        confirm_publish_mode=_bool("CONFIRM_PUBLISH_MODE", False),
         batch_size=_int("BATCH_SIZE", 100),
         request_delay=_float("REQUEST_DELAY", 0.2),
         max_retries=_int("MAX_RETRIES", 3),
         retry_backoff_seconds=_float("RETRY_BACKOFF_SECONDS", 2),
+        content_format_mode=_str("CONTENT_FORMAT_MODE", "richcontent_first"),
+        content_paragraph_heuristic=_bool("CONTENT_PARAGRAPH_HEURISTIC", True),
+        max_paragraph_chars=_int("MAX_PARAGRAPH_CHARS", 700),
+        min_sentences_per_paragraph=_int("MIN_SENTENCES_PER_PARAGRAPH", 1),
+        max_sentences_per_paragraph=_int("MAX_SENTENCES_PER_PARAGRAPH", 3),
         image_download_timeout=_float("IMAGE_DOWNLOAD_TIMEOUT", 60),
         image_download_user_agent=_str(
             "IMAGE_DOWNLOAD_USER_AGENT",
@@ -133,6 +154,11 @@ def load_settings(env_file: Path | None = None) -> Settings:
         jpeg_quality=_int("JPEG_QUALITY", 82),
         keep_original_images=_bool("KEEP_ORIGINAL_IMAGES", False),
         permalink_structure=_str("PERMALINK_STRUCTURE", "/post/%postname%/"),
+        max_post_failure_rate=_float("MAX_POST_FAILURE_RATE", 0.02),
+        max_image_failure_rate=_float("MAX_IMAGE_FAILURE_RATE", 0.10),
+        stop_on_critical_url_errors=_bool("STOP_ON_CRITICAL_URL_ERRORS", True),
+        stop_on_unmapped_category=_bool("STOP_ON_UNMAPPED_CATEGORY", True),
+        stop_on_unmapped_author=_bool("STOP_ON_UNMAPPED_AUTHOR", False),
     )
     settings.ensure_runtime_dirs()
     return settings

@@ -68,6 +68,23 @@ class WordPressClient:
             page += 1
         return posts[:limit]
 
+    def list_users(self, limit: int = 500, per_page: int = 100, **params: Any) -> list[dict[str, Any]]:
+        users: list[dict[str, Any]] = []
+        page = 1
+        while len(users) < limit:
+            batch = self.request(
+                "GET",
+                f"{self.settings.wp_v2_root}/users",
+                params={**params, "per_page": min(per_page, limit - len(users)), "page": page},
+            )
+            if not batch:
+                return users
+            users.extend(batch)
+            if len(batch) < per_page:
+                return users
+            page += 1
+        return users[:limit]
+
     def get_post(self, post_id: int, context: str = "edit") -> dict[str, Any]:
         return self.request("GET", f"{self.settings.wp_v2_root}/posts/{post_id}", params={"context": context})
 

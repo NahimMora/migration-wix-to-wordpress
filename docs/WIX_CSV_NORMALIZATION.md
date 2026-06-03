@@ -16,6 +16,7 @@ media
 url.path
 publicUrl
 hasImage
+memberId
 ```
 
 Antes de analizar o importar, convertirlo con:
@@ -32,19 +33,22 @@ Este comando no escribe en WordPress, no sube imagenes y no crea posts.
 Genera un CSV canonico:
 
 ```txt
-wix_id,title,content,date,category,image_url,old_url,author,excerpt,slug,tags,page_content
+wix_id,title,content,date,category,image_url,old_url,author,author_source_id,author_source_slug,author_resolution,excerpt,slug,tags,page_content
 ```
 
 Mapeo:
 
 - `wix_id`: `id`
 - `title`: `title`
-- `content`: `contentText` convertido a HTML simple con parrafos
+- `content`: `richContent` convertido a parrafos HTML cuando sea posible; si no, `contentText` con heuristica de parrafos
 - `date`: `firstPublishedDate`
 - `category`: primer valor de `categoryIds`
 - `image_url`: `media.wixMedia.image.url`
 - `old_url`: `publicUrl`
 - `author`: vacio, salvo que exista columna `author`
+- `author_source_id`: `memberId`, `ownerId`, `authorId`, `createdBy` o campo equivalente
+- `author_source_slug`: `memberSlug`, `authorSlug`, `ownerSlug`, `createdBySlug` o campo equivalente
+- `author_resolution`: `pending`; se resuelve al importar/dry-run con `data/input/author_map.csv`
 - `excerpt`: `excerpt`
 - `slug`: `slug`, sin modificar
 - `tags`: `hashtags`, `tagIds` o `tags` si existen
@@ -57,6 +61,8 @@ Mapeo:
 - Si `categoryIds` tiene varios valores, usa el primero y registra los demas.
 - No modifica slugs.
 - Preserva Unicode en `slug`, `old_url` y contenido.
+- Conserva links del `richContent` cuando la estructura Wix los expone en decoraciones de texto.
+- Si `richContent` no sirve, agrupa oraciones de `contentText` en parrafos razonables.
 
 ## Categorias
 
@@ -64,7 +70,7 @@ El CSV normalizado deja `category` como el primer ID de Wix encontrado en `categ
 
 ```csv
 wix_category,wix_category_id,wix_category_slug,wp_category_id,wp_category_name
-Salta,0d80fe16-527a-4e1e-89e3-6a85d1dc22bd,salta,8,Salta
+Salta,0d80fe16-527a-4e1e-89e3-6a85d1dc22bd,salta,3,Salta
 ```
 
 Tambien se puede generar un borrador desde el JSON de categorias exportado por Wix:
@@ -75,6 +81,28 @@ python -m src.main normalize-wix-categories --file data/input/wix_categories.jso
 
 El comando corrige mojibake en labels/slugs/descripciones, no escribe en WordPress y deja vacio `wp_category_id` cuando no puede inferirlo desde un mapa existente.
 
+## Autores
+
+El CSV normalizado guarda el autor Wix de origen, pero no inventa usuarios WordPress. Completar:
+
+```txt
+data/input/author_map.csv
+```
+
+Listar usuarios WordPress con un comando solo GET:
+
+```bash
+python -m src.main list-wordpress-users
+```
+
+Validar el mapa:
+
+```bash
+python -m src.main verify-authors
+```
+
+Si no hay match y `STOP_ON_UNMAPPED_AUTHOR=false`, el migrador usa `DEFAULT_AUTHOR_ID` y lo reporta como warning.
+
 ## Reporte
 
 Genera:
@@ -82,6 +110,7 @@ Genera:
 ```txt
 data/output/normalize_wix_csv_report.csv
 data/output/encoding_report.csv
+data/output/content_format_report.csv
 ```
 
 Incluye resumen y warnings por fila:
@@ -95,6 +124,14 @@ Incluye resumen y warnings por fila:
 - URLs invalidas;
 - errores de JSON en `media`;
 - errores de JSON en `categoryIds`.
+- fuente de contenido usada;
+- cantidad de parrafos generados.
+
+Para revisar contenido sin normalizar todo:
+
+```bash
+python -m src.main preview-content-format --file data/input/noticias_0001.csv --limit 5
+```
 
 ## Encoding y mojibake
 

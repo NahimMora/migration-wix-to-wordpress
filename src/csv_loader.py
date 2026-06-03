@@ -7,6 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .author_mapper import load_author_map, resolve_author
 from .category_mapper import load_category_map, resolve_category
 from .config import Settings
 from .database import MigrationDB
@@ -26,6 +27,7 @@ EXPECTED_COLUMNS = {
     "author",
 }
 OPTIONAL_COLUMNS = {"slug", "excerpt", "tags", "page_content"}
+OPTIONAL_COLUMNS.update({"author_source_id", "author_source_slug", "author_resolution"})
 COLUMN_ALIASES = {
     "post_title": "title",
     "body": "content",
@@ -124,8 +126,16 @@ def analyze_csv(file_path: Path, db: MigrationDB | None = None) -> dict[str, Any
     return result
 
 
-def import_csv(file_path: Path, settings: Settings, db: MigrationDB, limit: int | None = None) -> dict[str, Any]:
+def import_csv(
+    file_path: Path,
+    settings: Settings,
+    db: MigrationDB,
+    limit: int | None = None,
+    run_id: str | None = None,
+    source_file_index: int | None = None,
+) -> dict[str, Any]:
     category_result = load_category_map(settings.input_dir / "category_map.csv", db)
+    author_rows, author_warnings = load_author_map(settings.input_dir / "author_map.csv")
     rows, warnings = read_csv_rows(file_path, limit=limit)
     imported = 0
     skipped = 0
@@ -144,19 +154,34 @@ def import_csv(file_path: Path, settings: Settings, db: MigrationDB, limit: int 
             normalized.get("category_source"),
             settings.default_category_id,
         )
+        author_resolution = resolve_author(
+            author_rows,
+            normalized.get("author_source_id"),
+            normalized.get("author_source_slug"),
+            settings,
+        )
         normalized["wp_category_id"] = wp_category_id
+        normalized["wp_author_id"] = author_resolution["wp_user_id"]
+        normalized["source_file"] = str(file_path)
+        normalized["source_file_index"] = source_file_index
+        normalized["run_id"] = run_id
+        row["author_id"] = author_resolution["wp_user_id"]
+        row["author_resolution"] = author_resolution
         normalized["raw_payload"] = row
         post_id = db.upsert_post_source(normalized)
         imported += 1
         if category_warning:
             db.record_error("post", post_id, "category_mapping", category_warning, row)
+        if author_resolution.get("warning"):
+            db.record_error("post", post_id, "author_mapping", author_resolution["warning"], row)
 
     result = {
         "file": str(file_path),
         "imported": imported,
         "skipped": skipped,
         "category_map": category_result,
-        "warnings": warnings + category_result.get("warnings", []),
+        "author_map_rows": len(author_rows),
+        "warnings": warnings + category_result.get("warnings", []) + author_warnings,
     }
     db.record_csv_import(str(file_path), len(rows), imported, skipped, result["warnings"])
     db.record_audit("csv", "info", "CSV import completed", result)

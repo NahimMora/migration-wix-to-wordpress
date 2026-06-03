@@ -8,6 +8,7 @@ from logging import Logger
 from pathlib import Path
 from typing import Any, Iterable
 
+from .author_mapper import load_author_map, resolve_author
 from .category_mapper import load_category_map, resolve_category_detail
 from .config import Settings
 from .csv_loader import import_csv
@@ -36,9 +37,13 @@ class PostMigrationManager:
         self.image_manager = ImageManager(settings, db)
 
     def dry_run(self, limit: int = 10, source_file: str | None = None) -> list[dict[str, Any]]:
-        self._load_source_if_needed(source_file, limit)
+        resolved_source_file = self._load_source_if_needed(source_file, limit)
         category_map_result = load_category_map(self.settings.input_dir / "category_map.csv", self.db)
+        author_rows, author_warnings = load_author_map(self.settings.input_dir / "author_map.csv")
         for warning in category_map_result.get("warnings", []):
+            self.db.record_audit("dry_run", "warning", warning)
+            self.logger.warning(warning)
+        for warning in author_warnings:
             self.db.record_audit("dry_run", "warning", warning)
             self.logger.warning(warning)
         warnings = validate_default_post_status(self.settings.default_post_status)
@@ -46,7 +51,16 @@ class PostMigrationManager:
             self.db.record_audit("dry_run", "warning", warning)
             self.logger.warning(warning)
 
-        posts = self.db.list_posts(statuses=["pending", "retry_pending", "failed", "dry_run_valid"], limit=limit)
+        source_filter = None
+        if source_file and resolved_source_file:
+            resolved_value = str(resolved_source_file)
+            if self.db.count("posts_migration", "source_file = ?", (resolved_value,)):
+                source_filter = resolved_value
+        posts = self.db.list_posts(
+            statuses=["pending", "retry_pending", "failed", "dry_run_valid"],
+            limit=limit,
+            source_file=source_filter,
+        )
         results: list[dict[str, Any]] = []
         for post in posts:
             raw_payload = _json_loads(post.get("raw_payload"))
@@ -59,6 +73,14 @@ class PostMigrationManager:
                 **post,
                 "wp_category_id": category_resolution["wp_category_id"],
             }
+            author_resolution = resolve_author(
+                author_rows,
+                post.get("author_source_id") or raw_payload.get("author_source_id"),
+                post.get("author_source_slug") or raw_payload.get("author_source_slug"),
+                self.settings,
+            )
+            post_for_payload["wp_author_id"] = author_resolution["wp_user_id"]
+            raw_payload["author_id"] = author_resolution["wp_user_id"]
             validation_warnings = validate_source_post(raw_payload, post_for_payload)
             image_plan = self.image_manager.dry_run_plan(post.get("featured_image_url"))
             url_prediction = predict_url_change(self.settings, post.get("old_url"), post.get("desired_slug"))
@@ -69,6 +91,7 @@ class PostMigrationManager:
                 int(post["id"]),
                 status=status,
                 wp_category_id=category_resolution["wp_category_id"],
+                wp_author_id=author_resolution["wp_user_id"],
                 error_message="; ".join(validation_warnings) if validation_warnings else None,
             )
             result = {
@@ -79,6 +102,7 @@ class PostMigrationManager:
                 "status": status,
                 "warnings": validation_warnings,
                 "category_resolution": category_resolution,
+                "author_resolution": author_resolution,
                 "url_prediction": url_prediction,
                 "post_payload": payload,
                 "image_plan": image_plan.plan,
@@ -93,7 +117,10 @@ class PostMigrationManager:
         limit: int | None = None,
         batch_size: int | None = None,
         statuses: Iterable[str] | None = None,
+        source_file: str | None = None,
+        run_id: str | None = None,
     ) -> MigrationSummary:
+        self._validate_write_mode(source_file=source_file, run_id=run_id, limit=limit, batch_size=batch_size)
         if not self.settings.allow_wordpress_writes:
             raise RuntimeError(
                 "WordPress writes are disabled. Set ALLOW_WORDPRESS_WRITES=true only after audit, verify and dry-run pass."
@@ -102,7 +129,7 @@ class PostMigrationManager:
         client = WordPressClient(self.settings)
         selected_statuses = list(statuses or ["dry_run_valid", "pending", "retry_pending"])
         max_posts = limit or batch_size or self.settings.batch_size
-        posts = self.db.list_posts(statuses=selected_statuses, limit=max_posts)
+        posts = self.db.list_posts(statuses=selected_statuses, limit=max_posts, source_file=source_file, run_id=run_id)
 
         processed = created = skipped = failed = 0
         created_count = self.db.count("posts_migration", "status = 'created'")
@@ -225,15 +252,23 @@ class PostMigrationManager:
             "note": "Preview only. No WordPress content was modified.",
         }
 
-    def _load_source_if_needed(self, source_file: str | None, limit: int | None) -> None:
+    def _load_source_if_needed(self, source_file: str | None, limit: int | None) -> Path | None:
+        file_path = self._resolve_source_file(source_file)
+        if source_file and file_path.exists() and not self.db.count("posts_migration", "source_file = ?", (str(file_path),)):
+            import_csv(file_path, self.settings, self.db, limit=limit)
+            return file_path
         if self.db.count("posts_migration") > 0:
-            return
-        file_path = self.settings.input_dir / "wix_posts_sample.csv"
-        if source_file:
-            candidate = Path(source_file)
-            file_path = candidate if candidate.is_absolute() else self.settings.root_dir / candidate
+            return file_path
         if file_path.exists():
             import_csv(file_path, self.settings, self.db, limit=limit)
+            return file_path
+        return None
+
+    def _resolve_source_file(self, source_file: str | None) -> Path:
+        if source_file:
+            candidate = Path(source_file)
+            return candidate if candidate.is_absolute() else self.settings.root_dir / candidate
+        return self.settings.input_dir / "wix_posts_sample.csv"
 
     def _handle_image(self, post: dict[str, Any], client: WordPressClient) -> ImageResult:
         image_url = clean_text(post.get("featured_image_url"))
@@ -274,7 +309,7 @@ class PostMigrationManager:
             "status": self.settings.default_post_status,
             "slug": post.get("desired_slug"),
             "categories": [int(post.get("wp_category_id") or self.settings.default_category_id)],
-            "author": int(raw_payload.get("author_id") or self.settings.default_author_id),
+            "author": int(post.get("wp_author_id") or raw_payload.get("author_id") or self.settings.default_author_id),
             "meta": {
                 "_wix_id": post.get("wix_id") or "",
                 "_wix_old_url": post.get("old_url") or "",
@@ -293,6 +328,35 @@ class PostMigrationManager:
     def _mark_post_failed(self, post: dict[str, Any], stage: str, error: str, raw_payload: dict[str, Any]) -> None:
         self.db.update_post(int(post["id"]), status="failed", error_message=error)
         self.db.record_error("post", post.get("id"), stage, error, raw_payload)
+
+    def _validate_write_mode(
+        self,
+        source_file: str | None = None,
+        run_id: str | None = None,
+        limit: int | None = None,
+        batch_size: int | None = None,
+    ) -> None:
+        selected_statuses = ["dry_run_valid", "pending", "retry_pending"]
+        estimated_rows = self.db.count(
+            "posts_migration",
+            "status IN ('dry_run_valid', 'pending', 'retry_pending')"
+            + (" AND source_file = ?" if source_file else "")
+            + (" AND run_id = ?" if run_id else ""),
+            tuple(item for item in (source_file, run_id) if item),
+        )
+        summary = {
+            "write_mode": "enabled" if self.settings.allow_wordpress_writes else "disabled",
+            "post_status": self.settings.default_post_status,
+            "confirm_publish_mode": self.settings.confirm_publish_mode,
+            "input_mode": "range" if run_id else "single file" if source_file else "sqlite queue",
+            "batch_size": batch_size or limit or self.settings.batch_size,
+            "files_to_process": [source_file] if source_file else [],
+            "estimated_rows": estimated_rows,
+            "selected_statuses": selected_statuses,
+        }
+        self.logger.warning("Migration write-mode summary: %s", json.dumps(summary, ensure_ascii=True))
+        if self.settings.default_post_status == "publish" and not self.settings.confirm_publish_mode:
+            raise RuntimeError("Publishing mode requires CONFIRM_PUBLISH_MODE=true")
 
 
 def _json_loads(value: Any) -> dict[str, Any]:

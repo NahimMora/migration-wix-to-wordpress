@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import html
 import io
 import json
 import re
@@ -12,6 +11,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .config import Settings, load_settings
+from .content_formatter import (
+    format_wix_content,
+    write_content_format_report,
+)
 from .encoding_utils import (
     analyze_csv_text_for_mojibake,
     count_mojibake_patterns,
@@ -29,6 +33,9 @@ NORMALIZED_COLUMNS = [
     "image_url",
     "old_url",
     "author",
+    "author_source_id",
+    "author_source_slug",
+    "author_resolution",
     "excerpt",
     "slug",
     "tags",
@@ -50,6 +57,7 @@ class NormalizeStats:
     rows_with_encoding_fixes: set[int] = field(default_factory=set)
     columns_with_encoding_fixes: set[str] = field(default_factory=set)
     rows: list[dict[str, Any]] = field(default_factory=list)
+    content_format_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def summary_rows(self) -> list[dict[str, Any]]:
         metrics = {
@@ -86,13 +94,18 @@ def normalize_wix_csv(
     output_file: Path,
     report_file: Path,
     encoding_report_file: Path,
+    settings: Settings | None = None,
+    content_report_file: Path | None = None,
 ) -> dict[str, Any]:
+    settings = settings or load_settings()
     stats = NormalizeStats()
     decoded = decode_text_file(input_file)
     input_encoding_analysis = analyze_csv_text_for_mojibake(decoded.text)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     report_file.parent.mkdir(parents=True, exist_ok=True)
     encoding_report_file.parent.mkdir(parents=True, exist_ok=True)
+    content_report_file = content_report_file or settings.output_dir / "content_format_report.csv"
+    content_report_file.parent.mkdir(parents=True, exist_ok=True)
 
     reader = csv.DictReader(io.StringIO(decoded.text))
     if not reader.fieldnames:
@@ -103,13 +116,15 @@ def normalize_wix_csv(
         writer.writeheader()
         for row_number, row in enumerate(reader, start=2):
             stats.total_rows += 1
-            normalized, report_row = normalize_wix_export_row(row, row_number)
+            normalized, report_row, content_report_row = normalize_wix_export_row(row, row_number, settings)
             writer.writerow(normalized)
             stats.normalized_rows += 1
             stats.rows.append(report_row)
+            stats.content_format_rows.append(content_report_row)
             _accumulate_stats(stats, report_row)
 
     _write_report(report_file, stats)
+    write_content_format_report(content_report_file, stats.content_format_rows)
     output_text = output_file.read_text(encoding="utf-8")
     output_pattern_count = count_mojibake_patterns(output_text)
     _write_encoding_report(
@@ -126,6 +141,7 @@ def normalize_wix_csv(
         "output": str(output_file),
         "report": str(report_file),
         "encoding_report": str(encoding_report_file),
+        "content_format_report": str(content_report_file),
         "encoding_detected": decoded.encoding_detected,
         "encoding_used": decoded.encoding_used,
         "mojibake_patterns_before": input_encoding_analysis["pattern_count_before"],
@@ -144,7 +160,12 @@ def normalize_wix_csv(
     }
 
 
-def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict[str, str], dict[str, Any]]:
+def normalize_wix_export_row(
+    row: dict[str, Any],
+    row_number: int,
+    settings: Settings | None = None,
+) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+    settings = settings or load_settings()
     warnings: list[str] = []
     media_error = ""
     category_error = ""
@@ -161,17 +182,12 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
         fixed_columns.add("page_content")
     if rich_content_warning:
         warnings.append(rich_content_warning)
-    content_source = "contentText"
-
-    if not content_text.strip():
-        extracted = extract_text_from_rich_content(rich_content)
-        if extracted:
-            content_text = extracted
-            content_source = "richContent"
-
-    content = text_to_simple_html(content_text)
+    content_result = format_wix_content(content_text, rich_content, settings)
+    content_source = content_result.source_used
+    content = content_result.html
     if not content:
         warnings.append("missing_content")
+    warnings.extend(content_result.warnings)
 
     categories, category_error = parse_category_ids(_value(row, "categoryIds", preserve_whitespace=True))
     category = categories[0] if categories else ""
@@ -193,6 +209,10 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
     if not date:
         warnings.append("missing_date")
 
+    author_source_id = extract_author_source_id(row)
+    author_source_slug = extract_author_source_slug(row)
+    author_resolution = "pending"
+
     normalized = {
         "wix_id": wix_id,
         "title": title,
@@ -202,6 +222,9 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
         "image_url": image_url,
         "old_url": old_url,
         "author": _fixed_value(row, "author", fixed_columns),
+        "author_source_id": author_source_id,
+        "author_source_slug": author_source_slug,
+        "author_resolution": author_resolution,
         "excerpt": excerpt,
         "slug": slug,
         "tags": extract_tags(row, fixed_columns),
@@ -221,19 +244,10 @@ def normalize_wix_export_row(row: dict[str, Any], row_number: int) -> tuple[dict
         "old_url": old_url,
         "image_url": image_url,
         "content_source": content_source,
+        "paragraphs_generated": content_result.paragraph_count,
         "encoding_fixed_columns": "|".join(sorted(fixed_columns)),
     }
-    return normalized, report_row
-
-
-def text_to_simple_html(text: str) -> str:
-    raw = text.strip()
-    if not raw:
-        return ""
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", raw) if part.strip()]
-    if len(paragraphs) == 1:
-        paragraphs = [part.strip() for part in raw.splitlines() if part.strip()]
-    return "\n".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
+    return normalized, report_row, content_result.report_row(wix_id, title)
 
 
 def extract_text_from_rich_content(raw: str) -> str:
@@ -320,6 +334,22 @@ def extract_tags(row: dict[str, Any], fixed_columns: set[str] | None = None) -> 
                 if fixed:
                     values.append(fixed)
     return ",".join(dict.fromkeys(values))
+
+
+def extract_author_source_id(row: dict[str, Any]) -> str:
+    for key in ("memberId", "ownerId", "authorId", "createdBy", "mostRecentContributorId", "contactId"):
+        value = _fixed_value(row, key, set())
+        if value:
+            return value
+    return ""
+
+
+def extract_author_source_slug(row: dict[str, Any]) -> str:
+    for key in ("memberSlug", "authorSlug", "ownerSlug", "createdBySlug", "slug.author"):
+        value = _fixed_value(row, key, set())
+        if value:
+            return value
+    return ""
 
 
 def fix_json_text_if_safe(raw: str) -> tuple[str, bool, str]:
@@ -504,6 +534,7 @@ def _write_report(report_file: Path, stats: NormalizeStats) -> None:
         "old_url",
         "image_url",
         "content_source",
+        "paragraphs_generated",
         "encoding_fixed_columns",
     ]
     with report_file.open("w", encoding="utf-8", newline="") as handle:
