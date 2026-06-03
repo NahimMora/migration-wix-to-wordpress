@@ -58,6 +58,23 @@ Mapeo:
 - No modifica slugs.
 - Preserva Unicode en `slug`, `old_url` y contenido.
 
+## Categorias
+
+El CSV normalizado deja `category` como el primer ID de Wix encontrado en `categoryIds`. Para que `import-csv` pueda resolverlo sin caer en `DEFAULT_CATEGORY_ID`, `data/input/category_map.csv` debe incluir el ID de Wix:
+
+```csv
+wix_category,wix_category_id,wix_category_slug,wp_category_id,wp_category_name
+Salta,0d80fe16-527a-4e1e-89e3-6a85d1dc22bd,salta,8,Salta
+```
+
+Tambien se puede generar un borrador desde el JSON de categorias exportado por Wix:
+
+```bash
+python -m src.main normalize-wix-categories --file data/input/wix_categories.json --output data/input/category_map_from_wix.csv --existing-map data/input/category_map.csv
+```
+
+El comando corrige mojibake en labels/slugs/descripciones, no escribe en WordPress y deja vacio `wp_category_id` cuando no puede inferirlo desde un mapa existente.
+
 ## Reporte
 
 Genera:

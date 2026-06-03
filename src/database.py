@@ -306,6 +306,9 @@ class MigrationDB:
                 (wix_category, wp_category_id, wp_category_name),
             )
 
+    def clear_categories(self) -> None:
+        self.execute("DELETE FROM categories_mapping")
+
     def get_category(self, wix_category: str) -> dict[str, Any] | None:
         return self.query_one("SELECT * FROM categories_mapping WHERE wix_category = ?", (wix_category,))
 

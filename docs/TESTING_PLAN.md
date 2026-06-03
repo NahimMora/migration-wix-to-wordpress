@@ -20,9 +20,12 @@ Si se parte de un export real de Wix:
 ```bash
 python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
 python -m src.main check-encoding --file data/input/wix_posts_normalized_0001.csv
+python -m src.main normalize-wix-categories --file data/input/wix_categories.json --output data/input/category_map_from_wix.csv --existing-map data/input/category_map.csv
 python -m src.main analyze-csv --file data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-urls --file data/input/wix_posts_normalized_0001.csv
 ```
+
+Copiar al mapa definitivo solo las filas con `wp_category_id` confirmado. Las filas pendientes deben resolverse antes de escalar una prueba real.
 
 Antes de migrar una muestra, probar 2 o 3 URLs reales de imagen:
 

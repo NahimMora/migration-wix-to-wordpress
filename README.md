@@ -123,12 +123,20 @@ data/input/category_map.csv
 Formato:
 
 ```csv
-wix_category,wp_category_id,wp_category_name
-Policiales,4,Policiales
-Deportes,5,Deportes
+wix_category,wix_category_id,wix_category_slug,wp_category_id,wp_category_name,wix_post_count,notes
+Salta,0d80fe16-527a-4e1e-89e3-6a85d1dc22bd,salta,8,Salta,36959,
+Policiales,e278b6f7-9daf-41e1-8498-7f1a812990cc,policiales,4,Policiales,30477,
 ```
 
-Si una categoria no esta mapeada, el sistema usa `DEFAULT_CATEGORY_ID`, registra warning y continua.
+El loader acepta el formato anterior y el nuevo. En el formato nuevo carga aliases por nombre, ID de Wix y slug, porque el CSV real normalizado guarda `category` como primer UUID de `categoryIds`.
+
+Para generar un borrador desde el JSON de categorias exportado por Wix:
+
+```bash
+python -m src.main normalize-wix-categories --file data/input/wix_categories.json --output data/input/category_map_from_wix.csv --existing-map data/input/category_map.csv
+```
+
+Este comando no escribe en WordPress. Si una categoria no tiene `wp_category_id`, queda como pendiente, no se carga en SQLite y durante importacion se usara `DEFAULT_CATEGORY_ID` con warning.
 
 ## Auditoria previa obligatoria
 
@@ -183,6 +191,7 @@ Si todo esta correcto, repetir con 100, 1.000 y 10.000. Recien despues evaluar l
 python -m src.main init-db
 python -m src.main check-encoding --file data/input/noticias_0001.csv
 python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
+python -m src.main normalize-wix-categories --file data/input/wix_categories.json --output data/input/category_map_from_wix.csv --existing-map data/input/category_map.csv
 python -m src.main analyze-csv --file data/input/wix_posts.csv
 python -m src.main analyze-urls --file data/input/wix_posts.csv
 python -m src.main analyze-images --file data/input/wix_posts.csv
