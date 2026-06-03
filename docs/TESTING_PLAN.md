@@ -23,10 +23,13 @@ python -m src.main check-encoding --file data/input/wix_posts_normalized_0001.cs
 python -m src.main normalize-wix-categories --file data/input/wix_categories.json --output data/input/category_map_from_wix.csv --existing-map data/input/category_map.csv
 python -m src.main analyze-csv --file data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-urls --file data/input/wix_posts_normalized_0001.csv
+python -m src.main verify-meta-support
+python -m src.main test-meta-draft --dry-run
 ```
 
 Copiar al mapa definitivo solo las filas con `wp_category_id` confirmado. Las filas pendientes deben resolverse antes de escalar una prueba real.
 Revisar `data/output/pre_migration_url_risk_report.csv` antes de migrar. Si hay `slug_sanitized`, planificar redirecciones para esas URLs.
+`verify-meta-support` debe devolver `ok=true`; si no, los posts nuevos no van a guardar `_wix_id` ni `_wix_old_url` por REST.
 
 Antes de migrar una muestra, probar 2 o 3 URLs reales de imagen:
 

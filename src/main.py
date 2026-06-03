@@ -13,6 +13,7 @@ from .csv_loader import analyze_csv, import_csv
 from .database import MigrationDB
 from .image_manager import analyze_images, test_image_download
 from .logger import setup_logging
+from .meta_support import test_meta_draft_dry_run, verify_meta_support
 from .post_manager import PostMigrationManager
 from .preflight import verify_categories, verify_wordpress
 from .preflight import scan_existing_wordpress
@@ -82,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("verify-wordpress")
     subparsers.add_parser("verify-categories")
+    subparsers.add_parser("verify-meta-support")
+
+    test_meta_parser = subparsers.add_parser("test-meta-draft")
+    test_meta_parser.add_argument("--dry-run", action="store_true")
 
     import_parser = subparsers.add_parser("import-csv")
     import_parser.add_argument("--file", required=True)
@@ -186,6 +191,16 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
     if command == "verify-categories":
         load_category_map(settings.input_dir / "category_map.csv", db)
         return {"ok": verify_categories(settings, db, logger)}
+
+    if command == "verify-meta-support":
+        result = verify_meta_support(settings, db)
+        db.record_audit("wordpress_meta", "info" if result.get("ok") else "warning", "WordPress meta support verification completed", result)
+        return result
+
+    if command == "test-meta-draft":
+        if not args.dry_run:
+            raise ValueError("test-meta-draft refuses to run without --dry-run")
+        return test_meta_draft_dry_run(settings, db)
 
     if command == "import-csv":
         file_path = require_file(resolve_file(settings, args.file))

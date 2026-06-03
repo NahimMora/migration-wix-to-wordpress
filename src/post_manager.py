@@ -146,7 +146,13 @@ class PostMigrationManager:
                 self._mark_post_failed(post, "image", image_result.error, raw_payload)
                 continue
 
-            payload = self._build_post_payload(post, raw_payload, image_result=image_result, dry_run=False)
+            payload = self._build_post_payload(
+                post,
+                raw_payload,
+                image_result=image_result,
+                dry_run=False,
+                migration_batch=batch_label,
+            )
             try:
                 wp_post = client.create_post(payload)
                 final_slug = wp_post.get("slug") or post.get("desired_slug")
@@ -257,6 +263,7 @@ class PostMigrationManager:
         raw_payload: dict[str, Any],
         image_result: ImageResult,
         dry_run: bool,
+        migration_batch: str = "",
     ) -> dict[str, Any]:
         content = raw_payload.get("content_clean") or clean_html(
             clean_text(raw_payload.get("content")) or clean_text(raw_payload.get("page_content"))
@@ -271,7 +278,7 @@ class PostMigrationManager:
             "meta": {
                 "_wix_id": post.get("wix_id") or "",
                 "_wix_old_url": post.get("old_url") or "",
-                "_migration_batch": "dry-run" if dry_run else "",
+                "_migration_batch": "dry-run" if dry_run else migration_batch,
             },
         }
         if post.get("source_date"):

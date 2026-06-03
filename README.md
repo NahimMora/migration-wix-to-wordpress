@@ -108,7 +108,16 @@ Instalacion:
 
 1. Copiar esa carpeta a `wp-content/plugins/`.
 2. Activarla desde el panel de WordPress.
-3. Verificar que los meta fields `_wix_id`, `_wix_old_url` y `_migration_batch` esten disponibles por REST.
+3. Verificar que los meta fields `_wix_id`, `_wix_old_url` y `_migration_batch` esten disponibles por REST:
+
+```bash
+python -m src.main verify-meta-support
+python -m src.main test-meta-draft --dry-run
+```
+
+`verify-meta-support` solo hace requests GET. Si informa que el plugin no esta activo o que el post con `context=edit` solo devuelve `footnotes`, hay que copiar/activar este plugin en WordPress antes de crear nuevos posts de prueba.
+
+Los posts creados antes de activar el plugin no quedan reparados automaticamente; para esos casos hay que recrear la prueba o hacer una reparacion controlada de meta aparte.
 
 El plugin tambien reduce tamanos intermedios innecesarios como `medium_large`, `1536x1536` y `2048x2048`, sin eliminar todos los tamanos que WordPress o el tema pueden necesitar.
 
@@ -199,6 +208,8 @@ python -m src.main analyze-images --file data/input/wix_posts.csv
 python -m src.main test-image-download --url "https://static.wixstatic.com/media/..."
 python -m src.main verify-wordpress
 python -m src.main verify-categories
+python -m src.main verify-meta-support
+python -m src.main test-meta-draft --dry-run
 python -m src.main import-csv --file data/input/wix_posts.csv
 python -m src.main dry-run --limit 10
 python -m src.main migrate --limit 10

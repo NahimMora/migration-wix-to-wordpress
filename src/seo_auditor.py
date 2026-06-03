@@ -162,15 +162,16 @@ def verify_import_sample(settings: Settings, db: MigrationDB, client: WordPressC
     for post in posts:
         checks = defaultdict(lambda: "not_checked")
         try:
-            wp_post = client.get_post(int(post["wp_post_id"]))
+            wp_post = client.get_post(int(post["wp_post_id"]), context="edit")
             checks["http"] = "ok"
             rendered_title = _nested(wp_post, "title", "rendered") or _nested(wp_post, "title", "raw")
             rendered_content = _nested(wp_post, "content", "rendered") or _nested(wp_post, "content", "raw")
             checks["title_present"] = "ok" if visible_text(rendered_title) else "failed"
             checks["content_present"] = "ok" if visible_text(rendered_content) else "failed"
             checks["featured_media"] = "ok" if not post.get("featured_image_url") or wp_post.get("featured_media") else "failed"
-            checks["meta_wix_id"] = "ok" if _nested(wp_post, "meta", "_wix_id") else "failed"
-            checks["meta_old_url"] = "ok" if _nested(wp_post, "meta", "_wix_old_url") else "failed"
+            meta = wp_post.get("meta") if isinstance(wp_post.get("meta"), dict) else {}
+            checks["meta_wix_id"] = _meta_check(meta, "_wix_id", post.get("wix_id"))
+            checks["meta_old_url"] = _meta_check(meta, "_wix_old_url", post.get("old_url"))
         except WordPressError as exc:
             checks["http"] = f"failed:{exc.status_code}"
 
@@ -194,6 +195,18 @@ def _nested(data: dict[str, Any], *keys: str) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def _meta_check(meta: dict[str, Any], key: str, expected: Any) -> str:
+    if key not in meta:
+        return "failed"
+    value = clean_text(meta.get(key))
+    expected_value = clean_text(expected)
+    if expected_value and value == expected_value:
+        return "ok"
+    if value:
+        return "mismatch"
+    return "failed"
 
 
 def _report_reference_severity(pattern: str) -> str:

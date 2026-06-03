@@ -67,5 +67,7 @@ python -m src.main analyze-urls --file data/input/wix_posts.csv
 python -m src.main analyze-images --file data/input/wix_posts.csv
 python -m src.main verify-wordpress
 python -m src.main verify-categories
+python -m src.main verify-meta-support
+python -m src.main test-meta-draft --dry-run
 python -m src.main dry-run --limit 10
 ```
