@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from .config import Settings
 from .database import MigrationDB
 from .seo_auditor import report_orphan_media, scan_local_references
-from .url_manager import classify_url_status, redirect_reason
+from .url_manager import build_new_url, classify_url_status, redirect_reason
 
 
 def write_csv(file_path: Path, rows: Iterable[dict[str, Any]], fieldnames: list[str] | None = None) -> int:
@@ -47,7 +47,7 @@ def export_url_reports(settings: Settings, db: MigrationDB) -> dict[str, int]:
 
     for post in posts:
         old_url = post.get("old_url")
-        new_url = post.get("new_url")
+        new_url = post.get("new_url") or _expected_new_url(settings, post)
         status = post.get("url_status") or classify_url_status(old_url, new_url)
         old_path = urlparse(old_url or "").path
         new_path = urlparse(new_url or "").path
@@ -89,7 +89,7 @@ def export_rows(settings: Settings, filename: str, rows: Iterable[dict[str, Any]
 def export_migration_manifest(settings: Settings, db: MigrationDB) -> dict[str, Any]:
     posts_by_status = _counts(db, "posts_migration", "status")
     images_by_status = _counts(db, "images_migration", "status")
-    urls_by_status = _counts(db, "posts_migration", "url_status")
+    urls_by_status = _url_status_counts(settings, db)
     local_references = scan_local_references(settings, db)
     manifest = {
         "posts": {
@@ -138,5 +138,23 @@ def _folder_size(path: Path) -> int:
         return total
     for file_path in path.rglob("*"):
         if file_path.is_file():
+            if file_path.name == ".gitkeep":
+                continue
             total += file_path.stat().st_size
     return total
+
+
+def _expected_new_url(settings: Settings, post: dict[str, Any]) -> str | None:
+    slug = post.get("wp_slug_final") or post.get("desired_slug")
+    if not slug:
+        return None
+    return build_new_url(settings, str(slug))
+
+
+def _url_status_counts(settings: Settings, db: MigrationDB) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    posts = db.query("SELECT old_url, new_url, desired_slug, wp_slug_final, url_status FROM posts_migration")
+    for post in posts:
+        status = post.get("url_status") or classify_url_status(post.get("old_url"), post.get("new_url") or _expected_new_url(settings, post))
+        counts[status] = counts.get(status, 0) + 1
+    return counts
