@@ -60,6 +60,7 @@ class Settings:
     default_post_status: str
     default_author_id: int
     default_category_id: int
+    allow_wordpress_writes: bool
     batch_size: int
     request_delay: float
     max_retries: int
@@ -111,6 +112,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         default_post_status=_str("DEFAULT_POST_STATUS", "draft"),
         default_author_id=_int("DEFAULT_AUTHOR_ID", 1),
         default_category_id=_int("DEFAULT_CATEGORY_ID", 1),
+        allow_wordpress_writes=_bool("ALLOW_WORDPRESS_WRITES", False),
         batch_size=_int("BATCH_SIZE", 100),
         request_delay=_float("REQUEST_DELAY", 0.2),
         max_retries=_int("MAX_RETRIES", 3),

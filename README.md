@@ -8,7 +8,7 @@ El proyecto esta pensado para HolaSalta, un medio digital donde la prioridad es 
 
 Este proyecto no inicia ninguna migracion automaticamente.
 
-Los comandos de inicializacion, analisis y dry-run no crean posts ni suben imagenes a WordPress. El comando `migrate` existe, pero no debe ejecutarse hasta completar auditoria previa, verificacion de WordPress, verificacion de categorias, dry-run y pruebas controladas.
+Los comandos de inicializacion, analisis y dry-run no crean posts ni suben imagenes a WordPress. El comando `migrate` existe, pero no debe ejecutarse hasta completar auditoria previa, verificacion de WordPress, verificacion de categorias, dry-run y pruebas controladas. Ademas, las escrituras REST quedan bloqueadas por defecto con `ALLOW_WORDPRESS_WRITES=false`.
 
 El estado inicial recomendado para WordPress es:
 
@@ -74,6 +74,7 @@ WP_BASE_URL=http://holasalta.local
 WP_USERNAME=admin
 WP_APP_PASSWORD=xxxx xxxx xxxx xxxx
 DEFAULT_POST_STATUS=draft
+ALLOW_WORDPRESS_WRITES=false
 BATCH_SIZE=100
 PERMALINK_STRUCTURE=/post/%postname%/
 NORMALIZE_IMAGES=true
@@ -201,6 +202,8 @@ python -m src.main cleanup-test-batch --batch test-001 --dry-run
 ```
 
 `scan-existing-wordpress` solo lee posts existentes. `cleanup-test-batch` esta implementado como vista previa obligatoria con `--dry-run`; no borra posts ni media.
+
+`migrate` y `retry-failed` son comandos de escritura y fallan de forma intencional mientras `ALLOW_WORDPRESS_WRITES=false`.
 
 ## Reportes
 

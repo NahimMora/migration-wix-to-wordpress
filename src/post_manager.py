@@ -76,6 +76,11 @@ class PostMigrationManager:
         batch_size: int | None = None,
         statuses: Iterable[str] | None = None,
     ) -> MigrationSummary:
+        if not self.settings.allow_wordpress_writes:
+            raise RuntimeError(
+                "WordPress writes are disabled. Set ALLOW_WORDPRESS_WRITES=true only after audit, verify and dry-run pass."
+            )
+
         client = WordPressClient(self.settings)
         selected_statuses = list(statuses or ["dry_run_valid", "pending", "retry_pending"])
         max_posts = limit or batch_size or self.settings.batch_size

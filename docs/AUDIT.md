@@ -2,7 +2,7 @@
 
 ## Confirmacion operativa
 
-El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-*` y `dry-run` no crean posts ni suben imagenes. El unico comando que escribe en WordPress es `migrate`. `cleanup-test-batch` esta limitado a `--dry-run` en esta version.
+El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-*` y `dry-run` no crean posts ni suben imagenes. `migrate` y `retry-failed` son comandos de escritura, pero quedan bloqueados por defecto con `ALLOW_WORDPRESS_WRITES=false`. `cleanup-test-batch` esta limitado a `--dry-run` en esta version.
 
 ## Arquitectura
 
@@ -34,6 +34,7 @@ El sistema no inicia migracion automaticamente. `init-db`, `analyze-*`, `verify-
 - `orphan_media_report.csv` para media subida no usada.
 - `scan-local-references` antes de pasar a produccion.
 - `DEFAULT_POST_STATUS=draft` por defecto.
+- `ALLOW_WORDPRESS_WRITES=false` por defecto.
 - `csv_imports` registra importaciones de CSV para auditoria.
 
 ## Decisiones tecnicas
