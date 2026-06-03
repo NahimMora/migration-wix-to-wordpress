@@ -21,6 +21,7 @@ hasImage
 Antes de analizar o importar, convertirlo con:
 
 ```bash
+python -m src.main check-encoding --file data/input/noticias_0001.csv
 python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
 ```
 
@@ -63,6 +64,7 @@ Genera:
 
 ```txt
 data/output/normalize_wix_csv_report.csv
+data/output/encoding_report.csv
 ```
 
 Incluye resumen y warnings por fila:
@@ -76,3 +78,32 @@ Incluye resumen y warnings por fila:
 - URLs invalidas;
 - errores de JSON en `media`;
 - errores de JSON en `categoryIds`.
+
+## Encoding y mojibake
+
+El normalizador prueba lectura en este orden:
+
+1. `utf-8-sig`
+2. `utf-8`
+3. `cp1252`
+4. `latin1`
+
+Luego aplica correccion de mojibake en campos criticos:
+
+- `title`
+- `content`
+- `excerpt`
+- `slug`
+- `old_url`
+- `tags`
+- `page_content`, solo si `richContent` es JSON parseable y puede reescribirse sin romperlo.
+
+Corrige casos como `llegÃ³`, `detrÃ¡s`, `bÃºsqueda`, `OrÃ¡n`, `policÃ­a`, `afiliaciÃ³n`, `â€œ`, `â€™`, `â€“`, `â€”`, `â€¦` y `Â`.
+
+Despues de normalizar, ejecutar:
+
+```bash
+python -m src.main analyze-csv --file data/input/wix_posts_normalized_0001.csv
+```
+
+Si quedan patrones sospechosos en columnas criticas, `analyze-csv` devuelve `possible_mojibake_detected` y `migration_recommended=false`.

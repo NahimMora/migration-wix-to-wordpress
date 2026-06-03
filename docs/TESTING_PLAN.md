@@ -19,6 +19,7 @@ Si se parte de un export real de Wix:
 
 ```bash
 python -m src.main normalize-wix-csv --file data/input/noticias_0001.csv --output data/input/wix_posts_normalized_0001.csv
+python -m src.main check-encoding --file data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-csv --file data/input/wix_posts_normalized_0001.csv
 python -m src.main analyze-urls --file data/input/wix_posts_normalized_0001.csv
 ```
