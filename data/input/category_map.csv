@@ -1,11 +1,9 @@
 wix_category,wix_category_id,wix_category_slug,wp_category_id,wp_category_name,wix_post_count,notes
-Salta,0d80fe16-527a-4e1e-89e3-6a85d1dc22bd,salta,8,Salta,36959,
+Salta,0d80fe16-527a-4e1e-89e3-6a85d1dc22bd,salta,3,Salta,36959,
 Policiales,e278b6f7-9daf-41e1-8498-7f1a812990cc,policiales,4,Policiales,30477,
-Nacionales,83033015-371e-40da-8c42-2103a21916c0,nacionales,,Nacionales,19589,pending_wp_category_id
-Deportes,54430c17-c623-4df7-ae39-8c99152b6389,deportes,5,Deportes,3367,
-Espectáculos,a7c9b8d0-dd92-4041-af23-f8fbf8d91dc4,espectáculos,,Espectáculos,3547,pending_wp_category_id
-Internacionales,0d9eef06-972d-42b1-ae36-160b88c756ea,internacionales,,Internacionales,3412,pending_wp_category_id
-Sabias Que?,2306f9fa-5757-43c6-bca7-0d9f1d22e64d,sabias-que,,Sabias Que?,1628,pending_wp_category_id
-Columnas,5dd72350-c541-499b-ad49-9090fa474e0f,columnas,,Columnas,33,pending_wp_category_id
-Politica,,politica,6,Politica,,legacy_manual_mapping
-Sociedad,,sociedad,7,Sociedad,,legacy_manual_mapping
+Nacionales,83033015-371e-40da-8c42-2103a21916c0,nacionales,8,Nacionales,19589,
+Deportes,54430c17-c623-4df7-ae39-8c99152b6389,deportes,7,Deportes,3367,
+Espectáculos,a7c9b8d0-dd92-4041-af23-f8fbf8d91dc4,espectáculos,16,Espectáculos,3547,
+Internacionales,0d9eef06-972d-42b1-ae36-160b88c756ea,internacionales,17,Internacionales,3412,
+Sabias Que?,2306f9fa-5757-43c6-bca7-0d9f1d22e64d,sabias-que,18,¿Sabías que?,1628,
+Columnas,5dd72350-c541-499b-ad49-9090fa474e0f,columnas,19,Columnas,33,
