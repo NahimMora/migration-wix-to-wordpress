@@ -81,6 +81,7 @@ class Settings:
     max_image_filesize_kb: int
     jpeg_quality: int
     keep_original_images: bool
+    image_prefetch_workers: int
     permalink_structure: str
     max_post_failure_rate: float
     max_image_failure_rate: float
@@ -153,6 +154,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         max_image_filesize_kb=_int("MAX_IMAGE_FILESIZE_KB", 250),
         jpeg_quality=_int("JPEG_QUALITY", 82),
         keep_original_images=_bool("KEEP_ORIGINAL_IMAGES", False),
+        image_prefetch_workers=_int("IMAGE_PREFETCH_WORKERS", 3),
         permalink_structure=_str("PERMALINK_STRUCTURE", "/post/%postname%/"),
         max_post_failure_rate=_float("MAX_POST_FAILURE_RATE", 0.02),
         max_image_failure_rate=_float("MAX_IMAGE_FAILURE_RATE", 0.10),

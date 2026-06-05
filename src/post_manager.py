@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
@@ -136,6 +137,19 @@ class PostMigrationManager:
         batch_label = f"batch-{created_count // max(1, self.settings.batch_size) + 1}"
         self.logger.info("[Batch %s] Processing %s posts", batch_label, len(posts))
 
+        # Launch image downloads in background while the main loop processes posts
+        prefetch_futures: dict[str, Future[None]] = {}
+        _prefetch_executor: ThreadPoolExecutor | None = None
+        _prefetch_workers = self.settings.image_prefetch_workers
+        if _prefetch_workers > 0:
+            _prefetch_executor = ThreadPoolExecutor(max_workers=_prefetch_workers)
+            for _post in posts:
+                _url = clean_text(_post.get("featured_image_url")) or ""
+                if _url and _url not in prefetch_futures:
+                    prefetch_futures[_url] = _prefetch_executor.submit(
+                        self.image_manager.prefetch_one, _url
+                    )
+
         for post in posts:
             processed += 1
             if post.get("wp_post_id") and post.get("status") == "created":
@@ -166,6 +180,14 @@ class PostMigrationManager:
                 self.db.record_error("post", post.get("id"), "duplicate_slug", message, raw_payload)
                 self.logger.warning("[Post skipped] wix_id=%s %s", post.get("wix_id"), message)
                 continue
+
+            # Wait for this post's prefetched image before proceeding
+            _pf_url = clean_text(post.get("featured_image_url")) or ""
+            if _pf_url in prefetch_futures:
+                try:
+                    prefetch_futures[_pf_url].result(timeout=self.settings.image_download_timeout + 30)
+                except Exception:
+                    pass
 
             image_result = self._handle_image(post, client)
             if image_result.error and not self.settings.create_post_if_image_fails:
@@ -213,12 +235,69 @@ class PostMigrationManager:
                 if exc.critical:
                     raise
 
+        if _prefetch_executor is not None:
+            _prefetch_executor.shutdown(wait=False)
+
         summary = MigrationSummary(processed=processed, created=created, skipped=skipped, failed=failed)
         self.db.record_audit("migration", "info", "Migration batch completed", summary.__dict__)
         return summary
 
     def retry_failed(self, limit: int | None = None) -> MigrationSummary:
         return self.migrate(limit=limit, statuses=["failed", "retry_pending", "image_uploaded_post_failed"])
+
+    def repair_missing_images(self, limit: int | None = None) -> dict[str, Any]:
+        """Retry image downloads for posts already created but missing their featured image.
+
+        For each qualifying post, re-attempts the download, uploads to WordPress, and
+        PATCHes the existing post to set featured_media.
+        """
+        if not self.settings.allow_wordpress_writes:
+            raise RuntimeError(
+                "WordPress writes are disabled. Set ALLOW_WORDPRESS_WRITES=true to use repair-missing-images."
+            )
+        sql = """
+            SELECT id, wp_post_id, featured_image_url, title, wix_id
+            FROM posts_migration
+            WHERE status = 'created'
+              AND featured_media_id IS NULL
+              AND featured_image_url IS NOT NULL
+              AND featured_image_url != ''
+              AND wp_post_id IS NOT NULL
+            ORDER BY id
+        """
+        if limit:
+            sql += f" LIMIT {limit}"
+        posts = self.db.query(sql)
+        client = WordPressClient(self.settings)
+        repaired = failed = skipped = 0
+        for post in posts:
+            image_url = clean_text(post.get("featured_image_url"))
+            if not image_url:
+                skipped += 1
+                continue
+            image_result = self._handle_image(post, client)
+            if not image_result.wp_media_id:
+                failed += 1
+                self.logger.warning(
+                    "[repair-image] wix_id=%s failed: %s", post.get("wix_id"), image_result.error
+                )
+                continue
+            wp_post_id = int(post["wp_post_id"])
+            try:
+                client.update_post(wp_post_id, {"featured_media": image_result.wp_media_id})
+                self.db.update_post(int(post["id"]), featured_media_id=image_result.wp_media_id)
+                repaired += 1
+                self.logger.info(
+                    "[repair-image] wix_id=%s wp_id=%s media_id=%s",
+                    post.get("wix_id"), wp_post_id, image_result.wp_media_id,
+                )
+            except WordPressError as exc:
+                failed += 1
+                self.db.record_error("post", post.get("id"), "repair_featured_media", str(exc), exc.payload)
+                self.logger.error("[repair-image] patch failed wix_id=%s error=%s", post.get("wix_id"), exc)
+        result = {"total": len(posts), "repaired": repaired, "failed": failed, "skipped": skipped}
+        self.db.record_audit("repair_missing_images", "info", "Repair completed", result)
+        return result
 
     def cleanup_test_batch_preview(self, batch: str) -> dict[str, Any]:
         posts = self.db.query(

@@ -21,11 +21,15 @@ from .preflight import verify_categories, verify_wordpress
 from .preflight import scan_existing_wordpress
 from .range_runner import (
     RangeSpec,
+    check_run_integrity,
+    clear_run_error,
     export_run_report,
     migrate_range,
     preflight_range,
+    repair_run_status,
     resume_run,
     run_status,
+    sqlite_health,
 )
 from .reports import export_migration_manifest, export_reports, export_rows
 from .seo_auditor import (
@@ -133,8 +137,23 @@ def build_parser() -> argparse.ArgumentParser:
     export_run_parser = subparsers.add_parser("export-run-report")
     export_run_parser.add_argument("--run-id", required=True)
 
+    integrity_parser = subparsers.add_parser("check-run-integrity")
+    integrity_parser.add_argument("--run-id", required=True)
+    integrity_parser.add_argument("--fast", action="store_true", help="Fast mode: GROUP BY query, skip image subqueries")
+
+    repair_parser = subparsers.add_parser("repair-run-status")
+    repair_parser.add_argument("--run-id", required=True)
+
+    clear_error_parser = subparsers.add_parser("clear-run-error")
+    clear_error_parser.add_argument("--run-id", required=True)
+
+    subparsers.add_parser("sqlite-health")
+
     retry_parser = subparsers.add_parser("retry-failed")
     retry_parser.add_argument("--limit", type=int)
+
+    repair_images_parser = subparsers.add_parser("repair-missing-images")
+    repair_images_parser.add_argument("--limit", type=int)
 
     subparsers.add_parser("export-reports")
     subparsers.add_parser("scan-local-references")
@@ -276,10 +295,26 @@ def dispatch(args: argparse.Namespace, settings: Settings, db: MigrationDB, logg
     if command == "export-run-report":
         return export_run_report(settings, db, args.run_id)
 
+    if command == "check-run-integrity":
+        return check_run_integrity(settings, db, args.run_id, fast=getattr(args, "fast", False))
+
+    if command == "repair-run-status":
+        return repair_run_status(settings, db, args.run_id)
+
+    if command == "clear-run-error":
+        return clear_run_error(db, args.run_id)
+
+    if command == "sqlite-health":
+        return sqlite_health(db)
+
     if command == "retry-failed":
         manager = PostMigrationManager(settings, db, logger)
         summary = manager.retry_failed(limit=args.limit)
         return summary.__dict__
+
+    if command == "repair-missing-images":
+        manager = PostMigrationManager(settings, db, logger)
+        return manager.repair_missing_images(limit=args.limit)
 
     if command == "export-reports":
         counts = export_reports(settings, db)

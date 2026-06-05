@@ -91,6 +91,9 @@ class WordPressClient:
     def create_post(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request("POST", f"{self.settings.wp_v2_root}/posts", json=payload)
 
+    def update_post(self, post_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.request("POST", f"{self.settings.wp_v2_root}/posts/{post_id}", json=payload)
+
     def list_categories(self, per_page: int = 100) -> list[dict[str, Any]]:
         categories: list[dict[str, Any]] = []
         page = 1

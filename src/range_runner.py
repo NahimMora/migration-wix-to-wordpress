@@ -191,32 +191,63 @@ def process_range_file(
     enforce_pre_migrate_thresholds(settings, db, normalized_file, csv_result, url_result)
 
     import_result = import_csv(normalized_file, settings, db, run_id=spec.run_id, source_file_index=index)
-    db.update_run_file(spec.run_id, index, status="imported", rows_imported=int(import_result.get("imported", 0)))
-    manager.dry_run(limit=int(import_result.get("imported", 0)) or None, source_file=str(normalized_file))
-    summary = manager.migrate(source_file=str(normalized_file), run_id=spec.run_id)
-    enforce_post_failure_rate(settings, summary.processed, summary.failed)
+    rows_imported = int(import_result.get("imported", 0))
+    db.update_run_file(spec.run_id, index, status="imported", rows_imported=rows_imported)
+    manager.dry_run(limit=rows_imported or None, source_file=str(normalized_file))
+
+    total_created = total_failed = total_skipped = total_processed = 0
+    while True:
+        remaining = _count_posts_for_file(db, settings, spec.run_id, index, ["dry_run_valid", "pending", "retry_pending"])
+        if remaining == 0:
+            break
+        batch_summary = manager.migrate(source_file=str(normalized_file), run_id=spec.run_id)
+        total_created += batch_summary.created
+        total_failed += batch_summary.failed
+        total_skipped += batch_summary.skipped
+        total_processed += batch_summary.processed
+        enforce_post_failure_rate(settings, batch_summary.processed, batch_summary.failed)
+        if batch_summary.processed == 0:
+            break  # No progress made — avoid infinite loop on unexpected stall
+
+    remaining_after = _count_posts_for_file(db, settings, spec.run_id, index, ["dry_run_valid", "pending", "retry_pending"])
+    file_status = "migrated" if remaining_after == 0 else "partial"
     image_counts = image_status_counts(db, spec.run_id)
     warn_on_image_failure_rate(settings, logger, image_counts)
     db.update_run_file(
         spec.run_id,
         index,
-        status="migrated",
-        rows_created=summary.created,
-        rows_failed=summary.failed,
+        status=file_status,
+        rows_created=total_created,
+        rows_failed=total_failed,
         images_uploaded=image_counts.get("uploaded", 0),
         images_reused=image_counts.get("reused_by_url", 0) + image_counts.get("reused_by_hash", 0),
         finished_at=_now(),
     )
     export_reports(settings, db)
-    return {"file": str(input_file), "status": "migrated", "created": summary.created, "failed": summary.failed}
+    return {"file": str(input_file), "status": file_status, "created": total_created, "failed": total_failed}
 
 
 def resume_run(settings: Settings, db: MigrationDB, logger: Any, run_id: str) -> dict[str, Any]:
     run = db.get_run(run_id)
     if not run:
         raise ValueError(f"Run not found: {run_id}")
+
+    status = str(run.get("status") or "")
+    recovery_note: str | None = None
+    if status == "failed":
+        files = db.list_run_files(run_id)
+        partial_files = [f for f in files if f.get("status") == "partial"]
+        recovery_note = (
+            f"Run was in 'failed' state. Auto-recovering: {len(partial_files)} partial file(s) detected. "
+            "Status reset to 'running'. Resume proceeding."
+        )
+        db.update_run(run_id, status="running")
+
     spec = RangeSpec(Path(str(run["input_dir"])), str(run["pattern"]), int(run["start_index"]), int(run["end_index"]), run_id)
-    return migrate_range(settings, db, logger, spec)
+    result = migrate_range(settings, db, logger, spec)
+    if recovery_note:
+        result["recovery_note"] = recovery_note
+    return result
 
 
 def run_status(db: MigrationDB, run_id: str) -> dict[str, Any]:
@@ -277,6 +308,312 @@ def export_run_report(settings: Settings, db: MigrationDB, run_id: str) -> dict[
     return {"run_id": run_id, "global_dir": str(global_dir), "reports": report_counts, "summary": summary}
 
 
+INTEGRITY_REPORT_FIELDS = [
+    "run_id",
+    "file_index",
+    "file_name",
+    "file_status",
+    "rows_imported",
+    "rows_created_record",
+    "rows_created_real",
+    "rows_pending_real",
+    "rows_failed_real",
+    "rows_total_real",
+    "images_uploaded_record",
+    "images_uploaded_real",
+    "images_reused_record",
+    "images_reused_real",
+    "issue_types",
+    "has_issues",
+]
+
+_CREATED_STATUSES = {"created", "skipped_existing"}
+_PENDING_STATUSES = {"dry_run_valid", "pending", "retry_pending"}
+_FAILED_STATUSES = {"failed", "image_uploaded_post_failed"}
+
+
+def check_run_integrity(settings: Settings, db: MigrationDB, run_id: str, fast: bool = False) -> dict[str, Any]:
+    """Audit a run for files incorrectly marked migrated, pending posts, and count mismatches.
+
+    fast=True: single GROUP BY query instead of per-file COUNT queries; skips image subqueries.
+    fast=False: full per-file counts including image correlation (can be slow on large datasets).
+    """
+    run_dir = run_output_dir(settings, run_id)
+    global_dir = run_dir / "global"
+    global_dir.mkdir(parents=True, exist_ok=True)
+    files = db.list_run_files(run_id)
+    issues: list[dict[str, Any]] = []
+
+    # Fast mode: resolve all post counts in one GROUP BY query indexed by file_index.
+    fast_counts: dict[int, dict[str, int]] = {}
+    if fast:
+        count_rows = db.query(
+            """
+            SELECT source_file_index, status, COUNT(*) AS cnt
+            FROM posts_migration
+            WHERE run_id = ? AND source_file_index IS NOT NULL
+            GROUP BY source_file_index, status
+            """,
+            (run_id,),
+        )
+        for cr in count_rows:
+            fi = int(cr["source_file_index"])
+            if fi not in fast_counts:
+                fast_counts[fi] = {}
+            fast_counts[fi][str(cr["status"])] = int(cr["cnt"])
+
+    for file_rec in files:
+        file_index = int(file_rec["file_index"])
+        file_name = str(file_rec.get("file_name") or "")
+        file_status = str(file_rec.get("status") or "")
+        rows_imported = int(file_rec.get("rows_imported") or 0)
+        rows_created_record = int(file_rec.get("rows_created") or 0)
+        images_uploaded_record = int(file_rec.get("images_uploaded") or 0)
+        images_reused_record = int(file_rec.get("images_reused") or 0)
+
+        if fast:
+            fc = fast_counts.get(file_index, {})
+            real_created = sum(fc.get(s, 0) for s in _CREATED_STATUSES)
+            real_pending = sum(fc.get(s, 0) for s in _PENDING_STATUSES)
+            real_failed = sum(fc.get(s, 0) for s in _FAILED_STATUSES)
+            images_uploaded_real = images_uploaded_record  # not checked in fast mode
+            images_reused_real = images_reused_record
+        else:
+            real_created = _count_posts_for_file(db, settings, run_id, file_index, list(_CREATED_STATUSES))
+            real_pending = _count_posts_for_file(db, settings, run_id, file_index, list(_PENDING_STATUSES))
+            real_failed = _count_posts_for_file(db, settings, run_id, file_index, list(_FAILED_STATUSES))
+            source_file_str = str(normalized_path(settings, file_index))
+            img_uploaded_row = db.query_one(
+                """
+                SELECT COUNT(*) AS total FROM images_migration im
+                WHERE im.status = 'uploaded'
+                  AND EXISTS (
+                      SELECT 1 FROM posts_migration pm
+                      WHERE (pm.source_file = ? OR (pm.run_id = ? AND pm.source_file_index = ?))
+                        AND pm.featured_image_url = im.source_image_url
+                  )
+                """,
+                (source_file_str, run_id, file_index),
+            )
+            img_reused_row = db.query_one(
+                """
+                SELECT COUNT(*) AS total FROM images_migration im
+                WHERE im.status IN ('reused_by_url', 'reused_by_hash')
+                  AND EXISTS (
+                      SELECT 1 FROM posts_migration pm
+                      WHERE (pm.source_file = ? OR (pm.run_id = ? AND pm.source_file_index = ?))
+                        AND pm.featured_image_url = im.source_image_url
+                  )
+                """,
+                (source_file_str, run_id, file_index),
+            )
+            images_uploaded_real = int(img_uploaded_row["total"]) if img_uploaded_row else 0
+            images_reused_real = int(img_reused_row["total"]) if img_reused_row else 0
+
+        real_total = real_created + real_pending + real_failed
+
+        issue_types: list[str] = []
+        if file_status == "migrated" and real_pending > 0:
+            issue_types.append("migrated_but_has_pending_posts")
+        if file_status == "migrated" and rows_created_record < rows_imported and real_pending > 0:
+            issue_types.append("migrated_but_rows_created_lt_rows_imported")
+        if rows_created_record != real_created:
+            issue_types.append("rows_created_mismatch")
+        if real_created > rows_imported and rows_imported > 0:
+            issue_types.append("rows_created_gt_rows_imported")
+        if file_status == "partial":
+            issue_types.append("partial_file")
+        if not fast and images_uploaded_record != images_uploaded_real:
+            issue_types.append("images_uploaded_mismatch")
+
+        issues.append({
+            "run_id": run_id,
+            "file_index": file_index,
+            "file_name": file_name,
+            "file_status": file_status,
+            "rows_imported": rows_imported,
+            "rows_created_record": rows_created_record,
+            "rows_created_real": real_created,
+            "rows_pending_real": real_pending,
+            "rows_failed_real": real_failed,
+            "rows_total_real": real_total,
+            "images_uploaded_record": images_uploaded_record,
+            "images_uploaded_real": images_uploaded_real,
+            "images_reused_record": images_reused_record,
+            "images_reused_real": images_reused_real,
+            "issue_types": "; ".join(issue_types) if issue_types else "ok",
+            "has_issues": bool(issue_types),
+        })
+
+    integrity_report_path = global_dir / "run_integrity_report.csv"
+    write_csv(integrity_report_path, issues, INTEGRITY_REPORT_FIELDS)
+    files_with_issues = [row for row in issues if row["has_issues"]]
+    return {
+        "run_id": run_id,
+        "mode": "fast" if fast else "full",
+        "files_checked": len(files),
+        "files_with_issues": len(files_with_issues),
+        "report": str(integrity_report_path),
+        "issues": issues,
+    }
+
+
+def clear_run_error(db: MigrationDB, run_id: str) -> dict[str, Any]:
+    """Reset a failed run to paused/recoverable state. No WordPress writes."""
+    run = db.get_run(run_id)
+    if not run:
+        raise ValueError(f"Run not found: {run_id}")
+
+    old_status = str(run.get("status") or "")
+    if old_status != "failed":
+        return {
+            "run_id": run_id,
+            "old_status": old_status,
+            "new_status": old_status,
+            "changed": False,
+            "message": f"Run is not in failed state (current: {old_status}). No change needed.",
+        }
+
+    # Clear last_error from data blob.
+    raw_data = run.get("data") or {}
+    if isinstance(raw_data, str):
+        try:
+            import json as _json_mod
+            raw_data = _json_mod.loads(raw_data)
+        except Exception:
+            raw_data = {}
+    if isinstance(raw_data, dict):
+        raw_data.pop("last_error", None)
+
+    db.update_run(run_id, status="paused", data=raw_data)
+
+    files = db.list_run_files(run_id)
+    partial_files = [f["file_name"] for f in files if f.get("status") == "partial"]
+    return {
+        "run_id": run_id,
+        "old_status": old_status,
+        "new_status": "paused",
+        "changed": True,
+        "partial_files": partial_files,
+        "message": (
+            f"Run status cleared: failed → paused. "
+            f"{len(partial_files)} partial file(s) remain. "
+            "Run resume-run to continue."
+        ),
+    }
+
+
+def sqlite_health(db: MigrationDB) -> dict[str, Any]:
+    """Report SQLite health metrics. No WordPress writes."""
+    integrity_row = db.query_one("PRAGMA integrity_check")
+    integrity_result = integrity_row.get("integrity_check") if integrity_row else "unknown"
+
+    journal_row = db.query_one("PRAGMA journal_mode")
+    journal_mode = journal_row.get("journal_mode") if journal_row else "unknown"
+
+    wal_checkpoint: dict[str, Any] | None = None
+    if journal_mode == "wal":
+        ckpt = db.query_one("PRAGMA wal_checkpoint(PASSIVE)")
+        if ckpt:
+            wal_checkpoint = dict(ckpt)
+
+    page_size_row = db.query_one("PRAGMA page_size")
+    page_count_row = db.query_one("PRAGMA page_count")
+    page_size = int(page_size_row.get("page_size", 0)) if page_size_row else 0
+    page_count = int(page_count_row.get("page_count", 0)) if page_count_row else 0
+    size_bytes = page_size * page_count
+
+    table_counts: dict[str, int] = {}
+    for table in ["posts_migration", "images_migration", "migration_runs", "migration_run_files", "errors", "categories_mapping"]:
+        row = db.query_one(f"SELECT COUNT(*) AS total FROM {table}")
+        table_counts[table] = int(row["total"]) if row else 0
+
+    return {
+        "db_path": str(db.db_path),
+        "integrity_check": integrity_result,
+        "journal_mode": journal_mode,
+        "wal_checkpoint": wal_checkpoint,
+        "size_bytes": size_bytes,
+        "size_mb": round(size_bytes / (1024 * 1024), 2) if size_bytes else 0,
+        "table_counts": table_counts,
+        "ok": integrity_result == "ok",
+    }
+
+
+def repair_run_status(settings: Settings, db: MigrationDB, run_id: str) -> dict[str, Any]:
+    """Correct file statuses based on actual post counts. No WordPress writes."""
+    files = db.list_run_files(run_id)
+    repaired: list[dict[str, Any]] = []
+
+    for file_rec in files:
+        file_index = int(file_rec["file_index"])
+        file_name = str(file_rec.get("file_name") or "")
+        current_status = str(file_rec.get("status") or "")
+        rows_imported = int(file_rec.get("rows_imported") or 0)
+
+        real_created = _count_posts_for_file(db, settings, run_id, file_index, ["created", "skipped_existing"])
+        real_pending = _count_posts_for_file(db, settings, run_id, file_index, ["dry_run_valid", "pending", "retry_pending"])
+        real_failed = _count_posts_for_file(db, settings, run_id, file_index, ["failed", "image_uploaded_post_failed"])
+
+        if real_pending > 0:
+            if real_created > 0 or real_failed > 0:
+                correct_status = "partial"
+            elif rows_imported > 0:
+                correct_status = "imported"
+            else:
+                correct_status = current_status
+        elif real_created > 0 or real_failed > 0:
+            correct_status = "migrated"
+        else:
+            correct_status = current_status
+
+        if correct_status != current_status:
+            db.update_run_file(
+                run_id,
+                file_index,
+                status=correct_status,
+                rows_created=real_created,
+                rows_failed=real_failed,
+            )
+            repaired.append({
+                "file_index": file_index,
+                "file_name": file_name,
+                "old_status": current_status,
+                "new_status": correct_status,
+                "real_pending": real_pending,
+                "real_created": real_created,
+                "real_failed": real_failed,
+            })
+
+    return {
+        "run_id": run_id,
+        "files_checked": len(files),
+        "files_repaired": len(repaired),
+        "repaired": repaired,
+    }
+
+
+def _count_posts_for_file(
+    db: MigrationDB,
+    settings: Settings,
+    run_id: str,
+    file_index: int,
+    statuses: list[str],
+) -> int:
+    """Count posts for a file matching given statuses. Matches by source_file path or run_id+source_file_index."""
+    source_file_str = str(normalized_path(settings, file_index))
+    placeholders = ", ".join("?" * len(statuses))
+    row = db.query_one(
+        f"""
+        SELECT COUNT(*) AS total FROM posts_migration
+        WHERE status IN ({placeholders})
+          AND (source_file = ? OR (run_id = ? AND source_file_index = ?))
+        """,
+        tuple(statuses) + (source_file_str, run_id, file_index),
+    )
+    return int(row["total"]) if row else 0
+
+
 def enforce_pre_migrate_thresholds(settings: Settings, db: MigrationDB, normalized_file: Path, csv_result: dict[str, Any], url_result: dict[str, Any]) -> None:
     if csv_result.get("critical_warnings"):
         raise RuntimeError("Critical CSV warnings block migration: " + ", ".join(csv_result["critical_warnings"]))
@@ -288,7 +625,10 @@ def enforce_pre_migrate_thresholds(settings: Settings, db: MigrationDB, normaliz
         unmapped = [
             row
             for row in rows
-            if resolve_category_detail(db, row.get("category"), settings.default_category_id)["matched_by"] == "default"
+            # Only block on non-empty categories that aren't in the map.
+            # Empty category means the post had no categoryIds in Wix — use default silently.
+            if row.get("category")
+            and resolve_category_detail(db, row.get("category"), settings.default_category_id)["matched_by"] == "default"
         ]
         if unmapped:
             raise RuntimeError(f"Unmapped categories block migration: {len(unmapped)} rows")

@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests import Response
 
 from .config import Settings
@@ -68,6 +69,9 @@ class ImageDownloadProbe:
             "error_type": self.error_type,
             "error_detail": self.error_detail,
         }
+
+
+_PREFETCHED_STATUSES = frozenset({"downloaded", "normalized", "normalization_skipped"})
 
 
 class ImageDownloadError(RuntimeError):
@@ -139,7 +143,10 @@ class ImageManager:
                 wp_media_url=existing_by_url.get("wp_media_url"),
             )
 
-        image_id = self.db.upsert_image(source_url, status="pending")
+        if existing_by_url and existing_by_url.get("status") in _PREFETCHED_STATUSES:
+            image_id = int(existing_by_url["id"])
+        else:
+            image_id = self.db.upsert_image(source_url, status="pending")
         local_path = self._download(source_url, image_id)
         info = inspect_image(local_path)
         self._store_inspection(image_id, local_path, info, "downloaded")
@@ -213,10 +220,57 @@ class ImageManager:
             upload_path=upload_path,
         )
 
+    def prefetch_one(self, source_url: str) -> None:
+        """Download and inspect one image without uploading. Idempotent and thread-safe."""
+        source_url = clean_text(source_url)
+        if not source_url:
+            return
+        existing = self.db.get_image_by_url(source_url)
+        if existing:
+            if existing.get("wp_media_id"):
+                return
+            if (existing.get("local_path")
+                    and existing.get("status") in _PREFETCHED_STATUSES
+                    and Path(str(existing["local_path"])).exists()):
+                return
+        image_id = self.db.upsert_image(source_url, status="pending")
+        extension = _extension_from_url(source_url)
+        filename = hashlib.sha1(source_url.encode("utf-8")).hexdigest() + extension
+        destination = self.settings.images_dir / filename
+        probe = download_image_for_diagnostics(source_url, self.settings, destination=destination)
+        self._store_download_probe(image_id, probe)
+        if not probe.ok or not probe.local_path:
+            detail = probe.error_detail or probe.error_type or "download failed"
+            self.db.update_image(image_id, status="failed_download", error_message=detail)
+            return
+        info = inspect_image(probe.local_path)
+        self._store_inspection(image_id, probe.local_path, info, "downloaded")
+
+    def prefetch_downloads(self, source_urls: list[str], workers: int = 3) -> None:
+        """Concurrently pre-download a list of images. Blocks until all complete."""
+        urls = list({clean_text(u) for u in source_urls if clean_text(u)})
+        if not urls or workers <= 0:
+            return
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(self.prefetch_one, url): url for url in urls}
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
     def _download(self, source_url: str, image_id: int) -> Path:
         extension = _extension_from_url(source_url)
         filename = hashlib.sha1(source_url.encode("utf-8")).hexdigest() + extension
         destination = self.settings.images_dir / filename
+
+        # Reuse file already downloaded by prefetch_one
+        existing = self.db.get_image_by_url(source_url)
+        if existing and existing.get("local_path") and existing.get("status") in _PREFETCHED_STATUSES:
+            cached = Path(str(existing["local_path"]))
+            if cached.exists():
+                return cached
+
         probe = download_image_for_diagnostics(source_url, self.settings, destination=destination)
         self._store_download_probe(image_id, probe)
         if not probe.ok or not probe.local_path:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -164,6 +165,31 @@ CREATE TABLE IF NOT EXISTS migration_run_files (
 );
 """
 
+# Retry configuration for SQLite lock/busy errors.
+_SQLITE_LOCK_MSGS = ("database is locked", "database is busy")
+_RETRY_DELAYS = (1, 2, 4, 8, 16)  # seconds; 5 attempts total
+
+
+def _is_lock_error(exc: Exception) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        m in str(exc).lower() for m in _SQLITE_LOCK_MSGS
+    )
+
+
+def _run_with_retry(func: Any) -> Any:
+    """Call func() and retry up to 5 times with exponential backoff on SQLite lock/busy errors."""
+    last_exc: Exception | None = None
+    for delay in _RETRY_DELAYS:
+        try:
+            return func()
+        except sqlite3.OperationalError as exc:
+            if _is_lock_error(exc):
+                last_exc = exc
+                time.sleep(delay)
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]
+
 
 class MigrationDB:
     """Small SQLite repository wrapper with explicit migration states."""
@@ -174,8 +200,11 @@ class MigrationDB:
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             yield conn
             conn.commit()
@@ -222,13 +251,16 @@ class MigrationDB:
             )
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
-        with self.connect() as conn:
-            conn.execute(sql, params)
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(sql, params)
+        _run_with_retry(_do)
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return [dict(row) for row in rows]
+        def _do() -> list[dict[str, Any]]:
+            with self.connect() as conn:
+                return [dict(row) for row in conn.execute(sql, params).fetchall()]
+        return _run_with_retry(_do)
 
     def query_one(self, sql: str, params: Sequence[Any] = ()) -> dict[str, Any] | None:
         rows = self.query(sql, params)
@@ -269,12 +301,17 @@ class MigrationDB:
 
         columns = ", ".join(values)
         placeholders = ", ".join("?" for _ in values)
-        with self.connect() as conn:
-            cursor = conn.execute(
-                f"INSERT INTO posts_migration ({columns}) VALUES ({placeholders})",
-                list(values.values()),
-            )
-            return int(cursor.lastrowid)
+        col_values = list(values.values())
+
+        def _do() -> int:
+            with self.connect() as conn:
+                cursor = conn.execute(
+                    f"INSERT INTO posts_migration ({columns}) VALUES ({placeholders})",
+                    col_values,
+                )
+                return int(cursor.lastrowid)
+
+        return _run_with_retry(_do)
 
     def find_post_source(self, wix_id: Any, old_url: Any) -> dict[str, Any] | None:
         if wix_id:
@@ -358,12 +395,17 @@ class MigrationDB:
 
         columns = ", ".join(values)
         placeholders = ", ".join("?" for _ in values)
-        with self.connect() as conn:
-            cursor = conn.execute(
-                f"INSERT INTO images_migration ({columns}) VALUES ({placeholders})",
-                list(values.values()),
-            )
-            return int(cursor.lastrowid)
+        col_values = list(values.values())
+
+        def _do() -> int:
+            with self.connect() as conn:
+                cursor = conn.execute(
+                    f"INSERT INTO images_migration ({columns}) VALUES ({placeholders})",
+                    col_values,
+                )
+                return int(cursor.lastrowid)
+
+        return _run_with_retry(_do)
 
     def update_image(self, image_id: int, **fields: Any) -> None:
         self._update_table("images_migration", image_id, fields)
@@ -375,19 +417,21 @@ class MigrationDB:
         wp_category_name: str = "",
         wix_category_alias_type: str = "",
     ) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO categories_mapping (wix_category, wix_category_alias_type, wp_category_id, wp_category_name)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(wix_category) DO UPDATE SET
-                    wix_category_alias_type=excluded.wix_category_alias_type,
-                    wp_category_id=excluded.wp_category_id,
-                    wp_category_name=excluded.wp_category_name,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (wix_category, wix_category_alias_type, wp_category_id, wp_category_name),
-            )
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO categories_mapping (wix_category, wix_category_alias_type, wp_category_id, wp_category_name)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(wix_category) DO UPDATE SET
+                        wix_category_alias_type=excluded.wix_category_alias_type,
+                        wp_category_id=excluded.wp_category_id,
+                        wp_category_name=excluded.wp_category_name,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (wix_category, wix_category_alias_type, wp_category_id, wp_category_name),
+                )
+        _run_with_retry(_do)
 
     def clear_categories(self) -> None:
         self.execute("DELETE FROM categories_mapping")
@@ -425,24 +469,28 @@ class MigrationDB:
         error_message: str,
         raw_payload: Any = None,
     ) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO errors (entity_type, entity_id, stage, error_message, raw_payload)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (entity_type, str(entity_id) if entity_id is not None else None, stage, error_message, _json(raw_payload)),
-            )
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO errors (entity_type, entity_id, stage, error_message, raw_payload)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (entity_type, str(entity_id) if entity_id is not None else None, stage, error_message, _json(raw_payload)),
+                )
+        _run_with_retry(_do)
 
     def record_audit(self, audit_type: str, severity: str, message: str, data: Any = None) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO audit_results (audit_type, severity, message, data)
-                VALUES (?, ?, ?, ?)
-                """,
-                (audit_type, severity, message, _json(data)),
-            )
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO audit_results (audit_type, severity, message, data)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (audit_type, severity, message, _json(data)),
+                )
+        _run_with_retry(_do)
 
     def record_csv_import(
         self,
@@ -452,14 +500,16 @@ class MigrationDB:
         skipped_rows: int,
         warnings: Any = None,
     ) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO csv_imports (file_path, total_rows, imported_rows, skipped_rows, warnings)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (file_path, total_rows, imported_rows, skipped_rows, _json(warnings)),
-            )
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO csv_imports (file_path, total_rows, imported_rows, skipped_rows, warnings)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (file_path, total_rows, imported_rows, skipped_rows, _json(warnings)),
+                )
+        _run_with_retry(_do)
 
     def count(self, table: str, where: str = "", params: Sequence[Any] = ()) -> int:
         sql = f"SELECT COUNT(*) AS total FROM {table}"
@@ -478,22 +528,26 @@ class MigrationDB:
         status: str = "pending",
         data: Any = None,
     ) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO migration_runs (run_id, input_dir, pattern, start_index, end_index, status, started_at, data)
-                VALUES (?, ?, ?, ?, ?, ?, COALESCE(CURRENT_TIMESTAMP, ''), ?)
-                ON CONFLICT(run_id) DO UPDATE SET
-                    input_dir=excluded.input_dir,
-                    pattern=excluded.pattern,
-                    start_index=excluded.start_index,
-                    end_index=excluded.end_index,
-                    status=excluded.status,
-                    data=excluded.data,
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                (run_id, input_dir, pattern, start_index, end_index, status, _json(data)),
-            )
+        data_json = _json(data)
+
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO migration_runs (run_id, input_dir, pattern, start_index, end_index, status, started_at, data)
+                    VALUES (?, ?, ?, ?, ?, ?, COALESCE(CURRENT_TIMESTAMP, ''), ?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                        input_dir=excluded.input_dir,
+                        pattern=excluded.pattern,
+                        start_index=excluded.start_index,
+                        end_index=excluded.end_index,
+                        status=excluded.status,
+                        data=excluded.data,
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    (run_id, input_dir, pattern, start_index, end_index, status, data_json),
+                )
+        _run_with_retry(_do)
 
     def update_run(self, run_id: str, **fields: Any) -> None:
         if not fields:
@@ -518,17 +572,21 @@ class MigrationDB:
         columns = ", ".join(values)
         placeholders = ", ".join("?" for _ in values)
         updates = ", ".join(f"{key}=excluded.{key}" for key in values if key not in {"run_id", "file_index"})
-        with self.connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO migration_run_files ({columns})
-                VALUES ({placeholders})
-                ON CONFLICT(run_id, file_index) DO UPDATE SET
-                    {updates},
-                    updated_at=CURRENT_TIMESTAMP
-                """,
-                tuple(values.values()),
-            )
+        col_values = tuple(values.values())
+
+        def _do() -> None:
+            with self.connect() as conn:
+                conn.execute(
+                    f"""
+                    INSERT INTO migration_run_files ({columns})
+                    VALUES ({placeholders})
+                    ON CONFLICT(run_id, file_index) DO UPDATE SET
+                        {updates},
+                        updated_at=CURRENT_TIMESTAMP
+                    """,
+                    col_values,
+                )
+        _run_with_retry(_do)
 
     def update_run_file(self, run_id: str, file_index: int, **fields: Any) -> None:
         if not fields:
